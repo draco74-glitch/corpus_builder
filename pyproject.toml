@@ -27,7 +27,6 @@ dependencies = [
     "Pillow>=10.0",
     "datasketch>=1.6",
     "fasttext-langdetect>=1.0.0",
-    "kenlm>=0.3.0",
     "pdfplumber>=0.10",
     "aiohttp>=3.9",
     "requests-cache>=1.2",
@@ -38,6 +37,7 @@ dependencies = [
 dev = ["pytest>=7.4", "vcrpy>=5.1", "ruff>=0.1"]
 gui = ["PySide6>=6.6", "matplotlib>=3.8", "pyarrow>=15.0"]
 build = ["pyinstaller>=6.0"]
+perplexity = ["kenlm>=0.3.0"]
 
 [project.scripts]
 corpus-builder = "corpus_builder.cli:main"

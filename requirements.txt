@@ -32,8 +32,20 @@ Pillow>=10.0
 datasketch>=1.6
 
 # ===== Quality filter (perplexity, language detection, code/text ratio) =====
+# fasttext-langdetect — определение языка, работает на Python 3.10-3.14
 fasttext-langdetect>=1.0.0
-kenlm>=0.3.0
+
+# kenlm — perplexity-фильтр (ОПЦИОНАЛЬНО)
+# ⚠️ kenlm не собирается на Python 3.13+ (использует удалённые CPython C API).
+# Если у вас Python 3.13 или 3.14 — НЕ устанавливайте kenlm.
+# Без kenlm perplexity-фильтр не работает, но остальные функции — работают.
+# Чтобы включить perplexity: установите Python 3.12 и выполните:
+#   pip install kenlm
+# Затем в config.yaml:
+#   quality:
+#     perplexity_check: true
+#     perplexity_model_path: "path/to/model.binary"
+# kenlm>=0.3.0
 
 # ===== PDF tables =====
 pdfplumber>=0.10
