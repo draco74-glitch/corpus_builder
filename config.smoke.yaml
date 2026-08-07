@@ -1,0 +1,66 @@
+# Smoke-тест: 3 источника разных типов
+sources:
+  - url: "https://habr.com/ru/articles/712234/"
+    type: html
+    categories: [electronics, pcb, kicad]
+
+  - url: "https://electronics.stackexchange.com/questions/322180"
+    type: stackexchange
+    categories: [electronics, q_and_a]
+
+  - url: "https://github.com/KiCad/kicad-library"
+    type: github_repo
+    include_files: ["*.md", "*.kicad_sch", "*.kicad_pcb", "*.csv"]
+    categories: [kicad, library]
+
+output:
+  corpus_file: "corpus_output/raw_corpus.jsonl"
+  download_dir: "downloaded_files"
+  error_log: "corpus_output/errors.jsonl"
+  state_file: "corpus_output/state.json"
+  log_file: "corpus_output/crawl.log"
+  max_file_size_mb: 50
+  request_delay: 2
+  request_timeout: 30
+  user_agent: "CorpusBuilder/0.2 (research; smoke-test)"
+
+crawlers:
+  html:
+    extract_mode: trafilatura
+    download_images: true
+    image_extensions: [svg, png, jpg, jpeg, webp]
+    download_files_ext: [pdf, kicad_sch, kicad_pcb, zip, sch, brd]
+  pdf:
+    ocr_enabled: false   # на smoke не гоняем OCR
+    ocr_lang: "rus+eng"
+    ocr_min_chars_per_page: 50
+    image_min_width: 300
+    image_min_height: 200
+    extract_tables: false
+  github:
+    token_env: "GITHUB_TOKEN"
+    branch: null
+    include_files: ["*.md", "*.kicad_sch", "*.kicad_pcb", "*.csv"]
+  stackexchange:
+    api_key_env: "STACKEXCHANGE_KEY"
+    site: "electronics"
+
+quality:
+  min_chars: 100          # для smoke-test снизим порог
+  max_chars: 200_000
+  max_non_alpha_ratio: 0.30
+  max_dup_line_ratio: 0.50
+  language: bilingual
+  languages_allowed: [ru, en, mixed]
+
+dedup:
+  exact: true
+  minhash: true
+  minhash_num_perm: 64
+  minhash_threshold: 0.85
+  dedup_images: true
+
+pipeline:
+  resume: false           # на smoke-test нечего resume
+  save_checkpoint_every: 5
+  progress_bar: true

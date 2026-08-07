@@ -1,0 +1,86 @@
+# ===== Sources =====
+# Укажите ссылки, которые нужно обойти. type может быть:
+#   html, pdf, github_repo, stackexchange, forum
+
+sources:
+  # --- HTML-статьи и блоги ---
+  - url: "https://habr.com/ru/articles/712234/"
+    type: html
+    categories: [electronics, pcb, kicad]
+
+  - url: "https://www.allaboutcircuits.com/technical-articles/"
+    type: html
+    categories: [electronics, education]
+
+  # --- PDF datasheet'ы и руководства ---
+  - url: "https://www.ti.com/lit/ds/symlink/lm358.pdf"
+    type: pdf
+    categories: [datasheet, analog]
+
+  # --- GitHub-репозитории с KiCad-проектами ---
+  - url: "https://github.com/KiCad/kicad-library"
+    type: github_repo
+    include_files: ["*.md", "*.kicad_sch", "*.kicad_pcb", "*.csv", "*.dcm", "*.lib"]
+    categories: [kicad, library]
+
+  # --- StackExchange: вопросы по электронике ---
+  - url: "https://electronics.stackexchange.com/questions/322180"
+    type: stackexchange
+    categories: [electronics, q_and_a]
+
+# ===== Output =====
+output:
+  corpus_file: "corpus_output/raw_corpus.jsonl"
+  download_dir: "downloaded_files"
+  error_log: "corpus_output/errors.jsonl"
+  state_file: "corpus_output/state.json"
+  log_file: "corpus_output/crawl.log"
+  max_file_size_mb: 50
+  request_delay: 2          # задержка между запросами на один домен (сек)
+  request_timeout: 30
+  user_agent: "CorpusBuilder/0.2 (research; +https://github.com/your/corpus-builder)"
+
+# ===== Crawler-specific =====
+crawlers:
+  html:
+    extract_mode: trafilatura   # trafilatura | bs4
+    download_images: true
+    image_extensions: [svg, png, jpg, jpeg, webp]
+    download_files_ext: [pdf, kicad_sch, kicad_pcb, zip, sch, brd]
+  pdf:
+    ocr_enabled: true
+    ocr_lang: "rus+eng"
+    ocr_min_chars_per_page: 50   # если меньше — применить OCR
+    image_min_width: 300
+    image_min_height: 200
+    extract_tables: false       # pdfplumber — отключено по умолчанию (тяжело)
+  github:
+    token_env: "GITHUB_TOKEN"   # переменная окружения с токеном
+    branch: null                # null = узнать через API (default_branch)
+    include_files: ["*.md", "*.kicad_sch", "*.kicad_pcb", "*.csv", "*.dcm", "*.lib"]
+  stackexchange:
+    api_key_env: "STACKEXCHANGE_KEY"  # опционально, для повышенного лимита
+    site: "electronics"               # сайт по умолчанию
+
+# ===== Quality filter =====
+quality:
+  min_chars: 200
+  max_chars: 200_000
+  max_non_alpha_ratio: 0.30
+  max_dup_line_ratio: 0.50
+  language: bilingual          # bilingual | ru | en | multi
+  languages_allowed: [ru, en]
+
+# ===== Deduplication =====
+dedup:
+  exact: true                  # sha1 по нормализованному тексту
+  minhash: true                # нечёткая дедупликация
+  minhash_num_perm: 128
+  minhash_threshold: 0.85      # Jaccard > 0.85 = дубликат
+  dedup_images: true           # по sha1(image_bytes)
+
+# ===== Pipeline =====
+pipeline:
+  resume: true
+  save_checkpoint_every: 50
+  progress_bar: true

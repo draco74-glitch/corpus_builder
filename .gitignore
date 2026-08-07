@@ -1,0 +1,28 @@
+# Corpus output
+corpus_output/
+downloaded_files/
+responses_cache/
+state.json
+*.log
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+.env
+config.local.yaml
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+warn-*.txt
+xref-*.html
+
+# Auxiliary files (not part of the project)
+upload/
+*.deb
+*.docx
+*.xlsx
+*.tsv
+scripts/
