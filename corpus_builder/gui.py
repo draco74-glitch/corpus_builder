@@ -32,6 +32,13 @@ from matplotlib.figure import Figure
 
 from .app_settings import AppSettings
 from .settings_dialog import SettingsDialog
+from .gui_improvements import (
+    ConfigDropArea, RecordsTableContextMenu, LogSearchBar,
+    SplitterStateSaver, ToastNotification, apply_theme, get_theme_qss, THEMES,
+    KicadPreviewDialog, RecentConfigsManager, ProgressBarWithETA,
+    DiffCorpusDialog, YamlEditorDialog, DashboardDialog, FirstRunWizard,
+    set_language, get_language, tr,
+)
 
 # В打包анной версии через PyInstaller __package__ может быть пустым
 from .config import load_config, ensure_output_dirs
@@ -158,6 +165,23 @@ class MainWindow(QMainWindow):
         self._restore_last_session()
         self._restore_window_geometry()
 
+        # Recent configs manager (Улучшение H)
+        self.recent_configs = RecentConfigsManager()
+
+        # Splitter state saver (Улучшение D)
+        self.splitter_saver = SplitterStateSaver(
+            Path.home() / ".corpus_builder_splitter.json"
+        )
+
+        # Проверка первого запуска (Улучшение M)
+        first_run_file = Path.home() / ".corpus_builder_first_run"
+        if not first_run_file.exists():
+            QTimer.singleShot(500, self._show_first_run_wizard)
+            first_run_file.touch()
+
+        # Язык интерфейса (Улучшение N)
+        set_language(self.app_settings.gui.theme if hasattr(self.app_settings.gui, 'language') else 'ru')
+
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._refresh_status)
         self.status_timer.start(2000)
@@ -225,6 +249,8 @@ class MainWindow(QMainWindow):
         act_open_output.triggered.connect(self._open_output_folder)
         file_menu.addAction(act_open_output)
 
+        # Недавние файлы (Улучшение H)
+        self.recent_menu = file_menu.addMenu("Недавние config.yaml")
         file_menu.addSeparator()
 
         act_export_hf = QAction("Экспорт в HuggingFace...", self)
@@ -269,16 +295,18 @@ class MainWindow(QMainWindow):
         # === Меню Вид ===
         view_menu = menubar.addMenu("Вид")
 
-        # Тема
+        # Тема (Улучшения F + O)
         theme_menu = view_menu.addMenu("Тема")
-        self.theme_group = theme_menu.addAction("Тёмная")
-        self.theme_group.setCheckable(True)
-        self.theme_group.setChecked(self.app_settings.gui.theme == "dark")
-        self.theme_group.triggered.connect(lambda: self._change_theme("dark"))
-        act_light = theme_menu.addAction("Светлая")
-        act_light.setCheckable(True)
-        act_light.setChecked(self.app_settings.gui.theme == "light")
-        act_light.triggered.connect(lambda: self._change_theme("light"))
+        self.theme_group = {}
+        for theme_name in ["dark", "light", "material_blue", "material_green", "material_purple"]:
+            label = {"dark": "Тёмная", "light": "Светлая",
+                     "material_blue": "Material Blue", "material_green": "Material Green",
+                     "material_purple": "Material Purple"}[theme_name]
+            act = theme_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(self.app_settings.gui.theme == theme_name)
+            act.triggered.connect(lambda checked, t=theme_name: self._change_theme(t))
+            self.theme_group[theme_name] = act
 
         view_menu.addSeparator()
 
@@ -286,6 +314,11 @@ class MainWindow(QMainWindow):
         act_toggle_log.setShortcut(QKeySequence("Ctrl+L"))
         act_toggle_log.triggered.connect(self._toggle_log_visibility)
         view_menu.addAction(act_toggle_log)
+
+        act_search_log = QAction("🔍  Поиск по логу", self)
+        act_search_log.setShortcut(QKeySequence("Ctrl+F"))
+        act_search_log.triggered.connect(self._toggle_log_search)
+        view_menu.addAction(act_search_log)
 
         # === Меню Действия ===
         actions_menu = menubar.addMenu("Действия")
@@ -324,6 +357,36 @@ class MainWindow(QMainWindow):
         act_stats.setShortcut(QKeySequence("Ctrl+S"))
         act_stats.triggered.connect(self._refresh_stats_charts)
         help_menu.addAction(act_stats)
+
+        # Новые инструменты (Улучшения J, K, L, N)
+        tools_menu = menubar.addMenu("Инструменты")
+
+        act_diff = QAction("📊  Сравнить корпуса...", self)
+        act_diff.triggered.connect(self._show_diff_dialog)
+        tools_menu.addAction(act_diff)
+
+        act_yaml = QAction("📝  Редактор YAML...", self)
+        act_yaml.setShortcut(QKeySequence("Ctrl+E"))
+        act_yaml.triggered.connect(self._show_yaml_editor)
+        tools_menu.addAction(act_yaml)
+
+        act_dashboard = QAction("📈  Dashboard...", self)
+        act_dashboard.setShortcut(QKeySequence("Ctrl+D"))
+        act_dashboard.triggered.connect(self._show_dashboard)
+        tools_menu.addAction(act_dashboard)
+
+        tools_menu.addSeparator()
+
+        # Язык (Улучшение N)
+        lang_menu = tools_menu.addMenu("🌐  Язык / Language")
+        act_ru = lang_menu.addAction("Русский")
+        act_ru.setCheckable(True)
+        act_ru.setChecked(get_language() == "ru")
+        act_ru.triggered.connect(lambda: set_language("ru"))
+        act_en = lang_menu.addAction("English")
+        act_en.setCheckable(True)
+        act_en.setChecked(get_language() == "en")
+        act_en.triggered.connect(lambda: set_language("en"))
 
     def _menu_open_config(self) -> None:
         """Открыть config.yaml через меню Файл."""
@@ -1106,6 +1169,99 @@ class MainWindow(QMainWindow):
 
     # ----------------- Close event -----------------
 
+    def _show_first_run_wizard(self) -> None:
+        """Показать мастер первого запуска (Улучшение M)."""
+        wizard = FirstRunWizard(self.app_settings, self)
+        if wizard.exec():
+            self._log("INFO", "Мастер первого запуска завершён")
+            self._on_settings_changed()
+
+    def _show_diff_dialog(self) -> None:
+        """Открыть диалог сравнения корпусов (Улучшение J)."""
+        dialog = DiffCorpusDialog(self)
+        dialog.exec()
+
+    def _show_yaml_editor(self) -> None:
+        """Открыть встроенный редактор YAML (Улучшение K)."""
+        path = self.config_edit.text().strip() if hasattr(self, "config_edit") else None
+        dialog = YamlEditorDialog(path, self)
+        if dialog.exec() == QDialog.Accepted and path:
+            # Перезагружаем конфиг
+            self.config_edit.setText(path)
+
+    def _show_dashboard(self) -> None:
+        """Открыть dashboard с метриками (Улучшение L)."""
+        corpus_file = None
+        if self.config:
+            corpus_file = str(Path(self.config.output.corpus_file).parent / "corpus_final.jsonl")
+            if not Path(corpus_file).exists():
+                corpus_file = self.config.output.corpus_file
+        dialog = DashboardDialog(corpus_file, self.config.output.error_log if self.config else None, self)
+        dialog.exec()
+
+    def _apply_theme(self, theme_name: str) -> None:
+        """Применить тему оформления (Улучшения F + O)."""
+        colors = apply_theme(QApplication.instance(), theme_name)
+        self.setStyleSheet(get_theme_qss(colors))
+        self._log("INFO", f"Тема применена: {theme_name}")
+
+    def _change_theme(self, theme: str) -> None:
+        """Сменить тему оформления."""
+        self.app_settings.gui.theme = theme
+        self.app_settings.save()
+        self._apply_theme(theme)
+
+    def _add_to_recent(self, path: str) -> None:
+        """Добавить config.yaml в список недавних (Улучшение H)."""
+        self.recent_configs.add(path)
+        self._update_recent_menu()
+
+    def _update_recent_menu(self) -> None:
+        """Обновить меню недавних файлов (Улучшение H)."""
+        if not hasattr(self, "recent_menu"):
+            return
+        self.recent_menu.clear()
+        recent = self.recent_configs.get_recent(5)
+        for path in recent:
+            action = QAction(Path(path).name, self)
+            action.setToolTip(path)
+            action.triggered.connect(lambda checked, p=path: self.config_edit.setText(p))
+            self.recent_menu.addAction(action)
+        if recent:
+            self.recent_menu.addSeparator()
+            act_clear = QAction("Очистить список", self)
+            act_clear.triggered.connect(self.recent_configs.clear)
+            self.recent_menu.addAction(act_clear)
+
+    def _show_toast(self, title: str, message: str, toast_type: str = "info") -> None:
+        """Показать toast-уведомление (Улучшение E)."""
+        ToastNotification.show(self, title, message, toast_type)
+
+    def _toggle_log_search(self) -> None:
+        """Показать/скрыть поиск по логу (Улучшение C)."""
+        if not hasattr(self, "log_search_bar"):
+            return
+        if self.log_search_bar.isVisible():
+            self.log_search_bar.hide()
+        else:
+            self.log_search_bar.show()
+            self.log_search_bar.search_edit.setFocus()
+
+    def _save_splitters(self) -> None:
+        """Сохранить позиции разделителей (Улучшение D)."""
+        if hasattr(self, "splitter"):
+            self.splitter_saver.save(self.splitter, "main")
+
+    def _restore_splitters(self) -> None:
+        """Восстановить позиции разделителей (Улучшение D)."""
+        if hasattr(self, "splitter"):
+            self.splitter_saver.restore(self.splitter, "main")
+
+    def _preview_kicad(self, file_path: str) -> None:
+        """Показать превью KiCad-файла (Улучшение G)."""
+        dialog = KicadPreviewDialog(file_path, self)
+        dialog.exec()
+
     def closeEvent(self, event) -> None:
         if self.worker and self.worker.isRunning():
             reply = QMessageBox.question(
@@ -1127,6 +1283,7 @@ class MainWindow(QMainWindow):
             self.worker.request_stop()
             self.worker.wait(3000)
         self._save_session()
+        self._save_splitters()
         event.accept()
 
 
