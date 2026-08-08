@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QToolButton, QSizePolicy, QWidget
 )
 
+from .app_settings import AppSettings
+from .settings_dialog import SettingsDialog
 from .config_generator import (
     build_config,
     crawl_excel_with_depth,
@@ -193,9 +195,11 @@ class ConfigGeneratorDialog(QDialog):
         self.sources: list[dict] = []
         self.worker: QThread | None = None
 
+        self.app_settings = AppSettings.load()
         self._build_ui()
         self._connect_signals()
         self._apply_styles()
+        self._build_menu()
 
     # ----------------- UI -----------------
 
@@ -266,6 +270,11 @@ class ConfigGeneratorDialog(QDialog):
         self.btn_clear.setProperty("secondary", True)
         self.btn_clear.clicked.connect(self._on_clear)
         buttons_row.addWidget(self.btn_clear)
+
+        self.btn_settings = QPushButton("⚙  Настройки...")
+        self.btn_settings.setProperty("secondary", True)
+        self.btn_settings.clicked.connect(self._open_settings)
+        buttons_row.addWidget(self.btn_settings)
 
         outer.addLayout(buttons_row)
 

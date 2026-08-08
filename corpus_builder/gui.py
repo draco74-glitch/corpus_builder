@@ -18,7 +18,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QIcon, QTextCursor, QPalette, QPixmap
+    QAction, QColor, QFont, QIcon, QTextCursor, QPalette, QPixmap, QKeySequence
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -29,6 +29,9 @@ from PySide6.QtWidgets import (
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+from .app_settings import AppSettings
+from .settings_dialog import SettingsDialog
 
 # В打包анной версии через PyInstaller __package__ может быть пустым
 from .config import load_config, ensure_output_dirs
@@ -145,9 +148,15 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # Загружаем настройки приложения
+        self.app_settings = AppSettings.load()
+        self.app_settings.setup_env_vars()
+
         self._build_ui()
+        self._build_menu()
         self._connect_signals()
         self._restore_last_session()
+        self._restore_window_geometry()
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._refresh_status)
@@ -199,6 +208,238 @@ class MainWindow(QMainWindow):
         QCheckBox {{ color: {TEXT_PRIMARY}; }}
         """
         self.setStyleSheet(qss)
+
+    def _build_menu(self) -> None:
+        """Создать меню: Файл, Настройки, Вид, Справка."""
+        menubar = self.menuBar()
+
+        # === Меню Файл ===
+        file_menu = menubar.addMenu("Файл")
+
+        act_open_config = QAction("Открыть config.yaml...", self)
+        act_open_config.setShortcut(QKeySequence("Ctrl+O"))
+        act_open_config.triggered.connect(self._menu_open_config)
+        file_menu.addAction(act_open_config)
+
+        act_open_output = QAction("Открыть папку корпуса", self)
+        act_open_output.triggered.connect(self._open_output_folder)
+        file_menu.addAction(act_open_output)
+
+        file_menu.addSeparator()
+
+        act_export_hf = QAction("Экспорт в HuggingFace...", self)
+        act_export_hf.triggered.connect(self._on_export_hf)
+        file_menu.addAction(act_export_hf)
+
+        act_export_parquet = QAction("Экспорт в Parquet...", self)
+        act_export_parquet.triggered.connect(self._on_export_parquet)
+        file_menu.addAction(act_export_parquet)
+
+        file_menu.addSeparator()
+
+        act_quit = QAction("Выход", self)
+        act_quit.setShortcut(QKeySequence("Ctrl+Q"))
+        act_quit.triggered.connect(self._quit_app)
+        file_menu.addAction(act_quit)
+
+        # === Меню Настройки ===
+        settings_menu = menubar.addMenu("Настройки")
+
+        act_settings = QAction("⚙  Все настройки...", self)
+        act_settings.setShortcut(QKeySequence("Ctrl+,"))
+        act_settings.triggered.connect(self._open_settings)
+        settings_menu.addAction(act_settings)
+
+        settings_menu.addSeparator()
+
+        act_export_settings = QAction("📤  Экспорт настроек...", self)
+        act_export_settings.triggered.connect(self._export_settings)
+        settings_menu.addAction(act_export_settings)
+
+        act_import_settings = QAction("📥  Импорт настроек...", self)
+        act_import_settings.triggered.connect(self._import_settings)
+        settings_menu.addAction(act_import_settings)
+
+        settings_menu.addSeparator()
+
+        act_reset_settings = QAction("↺  Сбросить к defaults", self)
+        act_reset_settings.triggered.connect(self._reset_settings)
+        settings_menu.addAction(act_reset_settings)
+
+        # === Меню Вид ===
+        view_menu = menubar.addMenu("Вид")
+
+        # Тема
+        theme_menu = view_menu.addMenu("Тема")
+        self.theme_group = theme_menu.addAction("Тёмная")
+        self.theme_group.setCheckable(True)
+        self.theme_group.setChecked(self.app_settings.gui.theme == "dark")
+        self.theme_group.triggered.connect(lambda: self._change_theme("dark"))
+        act_light = theme_menu.addAction("Светлая")
+        act_light.setCheckable(True)
+        act_light.setChecked(self.app_settings.gui.theme == "light")
+        act_light.triggered.connect(lambda: self._change_theme("light"))
+
+        view_menu.addSeparator()
+
+        act_toggle_log = QAction("Показать/скрыть лог", self)
+        act_toggle_log.setShortcut(QKeySequence("Ctrl+L"))
+        act_toggle_log.triggered.connect(self._toggle_log_visibility)
+        view_menu.addAction(act_toggle_log)
+
+        # === Меню Действия ===
+        actions_menu = menubar.addMenu("Действия")
+
+        act_crawl = QAction("▶  Запустить краулинг", self)
+        act_crawl.setShortcut(QKeySequence("Ctrl+R"))
+        act_crawl.triggered.connect(self._on_start_crawl)
+        actions_menu.addAction(act_crawl)
+
+        act_postprocess = QAction("⚙  Пост-обработка", self)
+        act_postprocess.triggered.connect(self._on_postprocess)
+        actions_menu.addAction(act_postprocess)
+
+        act_stop = QAction("⏹  Остановить", self)
+        act_stop.triggered.connect(self._on_stop)
+        actions_menu.addAction(act_stop)
+
+        actions_menu.addSeparator()
+
+        act_generate_config = QAction("✨  Создать config.yaml...", self)
+        act_generate_config.triggered.connect(self._on_open_config_generator)
+        actions_menu.addAction(act_generate_config)
+
+        # === Меню Справка ===
+        help_menu = menubar.addMenu("Справка")
+
+        act_about = QAction("О программе", self)
+        act_about.triggered.connect(self._show_about)
+        help_menu.addAction(act_about)
+
+        act_help = QAction("Документация", self)
+        act_help.triggered.connect(self._open_documentation)
+        help_menu.addAction(act_help)
+
+        act_stats = QAction("Статистика корпуса", self)
+        act_stats.setShortcut(QKeySequence("Ctrl+S"))
+        act_stats.triggered.connect(self._refresh_stats_charts)
+        help_menu.addAction(act_stats)
+
+    def _menu_open_config(self) -> None:
+        """Открыть config.yaml через меню Файл."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Открыть config.yaml", "", "YAML (*.yaml *.yml);;Все файлы (*)"
+        )
+        if path:
+            self.config_edit.setText(path)
+
+    def _open_settings(self) -> None:
+        """Открыть диалог настроек."""
+        dialog = SettingsDialog(self.app_settings, self)
+        dialog.settings_changed.connect(self._on_settings_changed)
+        dialog.exec()
+
+    def _on_settings_changed(self) -> None:
+        """Настройки изменились — применяем."""
+        self.app_settings = AppSettings.load()
+        self.app_settings.setup_env_vars()
+        # Если есть загруженный config — применяем настройки к нему
+        if self.config:
+            self.app_settings.apply_to_config(self.config)
+        self._log("INFO", "Настройки применены")
+
+    def _export_settings(self) -> None:
+        """Экспорт настроек в JSON."""
+        from pathlib import Path
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт настроек", "corpus_builder_settings.json", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            import json
+            self.app_settings.save()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.app_settings.to_dict(), f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "Экспортировано", f"Настройки сохранены в:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+
+    def _import_settings(self) -> None:
+        """Импорт настроек из JSON."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Импорт настроек", "", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            import json
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            from .app_settings import AppSettings
+            self.app_settings = AppSettings._from_dict(data)
+            self.app_settings.save()
+            self.app_settings.setup_env_vars()
+            self._on_settings_changed()
+            QMessageBox.information(self, "Импортировано", "Настройки загружены и применены.")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+
+    def _reset_settings(self) -> None:
+        """Сбросить настройки к defaults."""
+        reply = QMessageBox.question(
+            self, "Сброс настроек",
+            "Сбросить все настройки к значениям по умолчанию?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            from .app_settings import AppSettings
+            self.app_settings = AppSettings()
+            self.app_settings.save()
+            self.app_settings.setup_env_vars()
+            self._on_settings_changed()
+            QMessageBox.information(self, "Сброшено", "Настройки сброшены к defaults.")
+
+    def _change_theme(self, theme: str) -> None:
+        """Сменить тему оформления."""
+        self.app_settings.gui.theme = theme
+        self.app_settings.save()
+        QMessageBox.information(self, "Тема изменена",
+            f"Тема изменена на \"{theme}\". Перезапустите приложение для применения.")
+
+    def _toggle_log_visibility(self) -> None:
+        """Показать/скрыть панель лога."""
+        # Лог находится во вкладках, переключаемся на него
+        if hasattr(self, "tabs"):
+            # Найти индекс вкладки с логом
+            for i in range(self.tabs.count()):
+                if self.tabs.tabText(i) == "Лог":
+                    self.tabs.setCurrentIndex(i)
+                    return
+
+    def _show_about(self) -> None:
+        """Показать окно 'О программе'."""
+        QMessageBox.about(self, "О программе",
+            "<h3>CorpusBuilder</h3>"
+            "<p>Сборщик сырого корпуса для pretraining LLM</p>"
+            "<p>Версия: 0.2.0</p>"
+            "<p>GitHub: <a href=\"https://github.com/draco74-glitch/corpus_builder\">"
+            "github.com/draco74-glitch/corpus_builder</a></p>"
+            "<p>Поддерживаемые источники: HTML, PDF, GitHub, StackExchange, "
+            "DOAJ, arXiv, Crossref, Wikipedia</p>"
+        )
+
+    def _open_documentation(self) -> None:
+        """Открыть документацию в браузере."""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl("https://github.com/draco74-glitch/corpus_builder"))
+
+    def _restore_window_geometry(self) -> None:
+        """Восстановить размер и позицию окна из настроек."""
+        w = self.app_settings.gui.window_width
+        h = self.app_settings.gui.window_height
+        self.resize(w, h)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -487,6 +728,9 @@ class MainWindow(QMainWindow):
             cfg.output.error_log = str(out_dir_path / "errors.jsonl")
             cfg.output.state_file = str(out_dir_path / "state.json")
             cfg.output.log_file = str(out_dir_path / "crawl.log")
+        # Применяем настройки приложения
+        self.app_settings.apply_to_config(cfg)
+        self.app_settings.setup_env_vars()
         ensure_output_dirs(cfg)
         self._save_session()
         return cfg
