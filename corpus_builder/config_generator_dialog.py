@@ -229,6 +229,25 @@ class ConfigGeneratorDialog(QDialog):
         self._apply_styles()
         self._build_menu()
 
+    # ----------------- Menu -----------------
+
+    def _build_menu(self) -> None:
+        """Создать меню в мастере config.yaml (заглушка для совместимости)."""
+        pass  # Меню создаётся через кнопки внизу диалога
+
+    def _open_settings(self) -> None:
+        """Открыть диалог настроек."""
+        try:
+            from .settings_dialog import SettingsDialog
+            dialog = SettingsDialog(self.app_settings, self)
+            if dialog.exec() == QDialog.Accepted:
+                self.app_settings = AppSettings.load()
+                self._log("INFO", "Настройки применены")
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, "Ошибка настроек",
+                f"Не удалось открыть настройки:\n\n{e}\n\n{traceback.format_exc()[:500]}")
+
     # ----------------- UI -----------------
 
     def _build_ui(self) -> None:
