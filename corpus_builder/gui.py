@@ -914,14 +914,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Занято",
                 "Дождитесь завершения краулинга перед открытием мастера.")
             return
-        # Передаём текущую папку вывода как начальную
-        default_dir = self.output_edit.text().strip() or os.path.expanduser("~")
-        dialog = ConfigGeneratorDialog(self, default_output_dir=default_dir)
-        if dialog.exec() == QDialog.Accepted:
-            # Мастер мог сохранить новый config.yaml — проверим и подскажем пользователю
-            self._log("INFO", "Мастер создания config.yaml завершён")
-            # Если файл сгенерирован — пользователь выбрал путь сохранения сам,
-            # поэтому только показываем подсказку, как загрузить его в главное окно.
+        try:
+            # Передаём текущую папку вывода как начальную
+            default_dir = self.output_edit.text().strip() or os.path.expanduser("~")
+            dialog = ConfigGeneratorDialog(self, default_output_dir=default_dir)
+            if dialog.exec() == QDialog.Accepted:
+                self._log("INFO", "Мастер создания config.yaml завершён")
+        except Exception as e:
+            import traceback
+            error_msg = traceback.format_exc()
+            self._log("ERROR", f"Ошибка при открытии мастера: {e}")
+            QMessageBox.critical(self, "Ошибка",
+                f"Не удалось открыть мастер создания config.yaml:\n\n{e}\n\n"
+                f"Подробности:\n{error_msg[:500]}")
 
     def _on_start_crawl(self) -> None:
         cfg = self._build_effective_config()

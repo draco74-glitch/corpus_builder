@@ -431,7 +431,14 @@ def crawl_excel_async_sync(
     """Синхронная обёртка для crawl_excel_async — для вызова из не-async кода.
 
     Запускает event loop и ждёт результата.
+    На Windows в PyInstaller frozen режиме использует SelectorEventLoopPolicy
+    (ProactorEventLoopPolicy может не работать корректно с aiohttp).
     """
+    import sys as _sys
+    if _sys.platform == "win32":
+        # На Windows используем SelectorEventLoop для совместимости с aiohttp
+        # в PyInstaller frozen режиме
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     return asyncio.run(crawl_excel_async(
         excel_path=excel_path,
         max_concurrent_seeds=max_concurrent_seeds,

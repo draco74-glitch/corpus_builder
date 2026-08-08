@@ -99,19 +99,47 @@ class ExcelGenWorker(QThread):
 
     def run(self) -> None:
         try:
-            # Используем асинхронную версию (Улучшения 1, 2, 4, 6, 7)
-            from .async_config_generator import crawl_excel_async_sync
-            sources = crawl_excel_async_sync(
-                self.excel_path,
-                max_concurrent_seeds=self.max_concurrent_seeds,
-                max_total_urls=self.max_total_urls,
-                same_domain_only=self.same_domain_only,
-                include_subdomains=self.include_subdomains,
-                request_delay=self.request_delay,
-                on_progress=self._on_progress,
-                should_stop=self.should_stop,
-                skip_crawl=self.skip_crawl,
-            )
+            if self.skip_crawl:
+                # Skip crawl — мгновенно, без сети
+                from .config_generator import from_excel, make_source
+                rows = from_excel(self.excel_path)
+                sources = []
+                seen = set()
+                for url, depth, cats in rows:
+                    if url not in seen:
+                        sources.append(make_source(url, categories=cats or None))
+                        seen.add(url)
+                if self._on_progress:
+                    self._on_progress(len(sources), len(sources), f"skip_crawl: {len(sources)} URLs")
+                for s in sources:
+                    self.url_found.emit(s)
+                self.finished_result.emit(sources)
+                return
+
+            # Пытаемся использовать асинхронную версию
+            try:
+                from .async_config_generator import crawl_excel_async_sync
+                sources = crawl_excel_async_sync(
+                    self.excel_path,
+                    max_concurrent_seeds=self.max_concurrent_seeds,
+                    max_total_urls=self.max_total_urls,
+                    same_domain_only=self.same_domain_only,
+                    include_subdomains=self.include_subdomains,
+                    request_delay=self.request_delay,
+                    on_progress=self._on_progress,
+                    should_stop=self.should_stop,
+                    skip_crawl=self.skip_crawl,
+                )
+            except Exception as async_err:
+                # Fallback на синхронную версию если async не работает
+                # (например, в PyInstaller frozen режиме asyncio может не работать)
+                from .config_generator import crawl_excel_with_depth
+                sources = crawl_excel_with_depth(
+                    self.excel_path,
+                    max_total_urls=self.max_total_urls,
+                    on_progress=self._on_progress,
+                    should_stop=self.should_stop,
+                )
             for s in sources:
                 self.url_found.emit(s)
             self.finished_result.emit(sources)
@@ -552,18 +580,25 @@ class ConfigGeneratorDialog(QDialog):
         QDesktopServices.openUrl(url)
 
     def _on_generate(self) -> None:
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "Занято", "Дождитесь завершения текущей задачи.")
-            return
+        try:
+            if self.worker and self.worker.isRunning():
+                QMessageBox.warning(self, "Занято", "Дождитесь завершения текущей задачи.")
+                return
 
-        # Определяем активную вкладку
-        idx = self.tabs.currentIndex()
-        if idx == 0:
-            self._start_excel_generation()
-        elif idx == 1:
-            self._start_github_generation()
-        elif idx == 2:
-            self._start_stackexchange_generation()
+            # Определяем активную вкладку
+            idx = self.tabs.currentIndex()
+            if idx == 0:
+                self._start_excel_generation()
+            elif idx == 1:
+                self._start_github_generation()
+            elif idx == 2:
+                self._start_stackexchange_generation()
+        except Exception as e:
+            import traceback
+            self._log("ERROR", f"Ошибка генерации: {e}")
+            QMessageBox.critical(self, "Ошибка генерации",
+                f"Не удалось сгенерировать config.yaml:\n\n{e}\n\n"
+                f"Подробности:\n{traceback.format_exc()[:500]}")
 
     def _start_excel_generation(self) -> None:
         path = self.excel_path_edit.text().strip()

@@ -102,6 +102,8 @@ a = Analysis(
         "selectolax",
         "aiohttp",
         "httpx",
+        "asyncio",
+        "concurrent.futures",
     ],
     hookspath=[],
     hooksconfig={},
