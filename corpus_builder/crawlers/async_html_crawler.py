@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
+from ..http import is_blocked_url
 from ..logging_setup import get_logger
 from ..models import AppConfig, CorpusRecord, DownloadedFile
 

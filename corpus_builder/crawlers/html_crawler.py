@@ -94,6 +94,10 @@ class HtmlCrawler(BaseCrawler):
                 if ext not in cfg.image_extensions:
                     continue
                 img_url = urljoin(url, src)
+                # Пропускаем видео/аудио/streaming URL (защита от зависания)
+                from ..http import is_blocked_url
+                if is_blocked_url(img_url):
+                    continue
                 result = download_file(
                     img_url,
                     self.config.output.download_dir,
@@ -120,6 +124,10 @@ class HtmlCrawler(BaseCrawler):
             if ext not in cfg.download_files_ext:
                 continue
             file_url = urljoin(url, href)
+            # Пропускаем видео/аудио/streaming URL (защита от зависания)
+            from ..http import is_blocked_url
+            if is_blocked_url(file_url):
+                continue
             result = download_file(
                 file_url,
                 self.config.output.download_dir,

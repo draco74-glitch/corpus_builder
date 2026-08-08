@@ -28,6 +28,7 @@ class PdfCrawler(BaseCrawler):
             self.config.output.max_file_size_mb,
             self.config.output.request_timeout,
             session=self.session,
+            max_download_time=300,  # 5 минут максимум на PDF
         )
         if not result:
             return None
