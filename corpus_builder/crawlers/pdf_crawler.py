@@ -70,37 +70,18 @@ class PdfCrawler(BaseCrawler):
 
             full_text.append(page_text)
 
-        # Параллельный OCR для страниц с малым текстом (Улучшение 3)
-        if cfg.ocr_enabled:
-            ocr_candidates = []
-            for page_num, text in enumerate(full_text):
-                if len(text.strip()) < cfg.ocr_min_chars_per_page:
-                    ocr_candidates.append(page_num)
-
-            if ocr_candidates:
+            # Если текста мало — пробуем OCR
+            if cfg.ocr_enabled and len(page_text.strip()) < cfg.ocr_min_chars_per_page:
                 try:
-                    ocr_results = self._parallel_ocr(
-                        doc, ocr_candidates, cfg.ocr_lang, max_workers=4
-                    )
-                    for page_num, ocr_text in ocr_results.items():
-                        if ocr_text and len(ocr_text) > len(full_text[page_num]):
-                            full_text[page_num] = ocr_text
-                            ocr_applied = True
+                    ocr_text = self._ocr_page(page, cfg.ocr_lang)
+                    if ocr_text and len(ocr_text) > len(page_text):
+                        full_text[-1] = ocr_text
+                        ocr_applied = True
                 except Exception as e:
-                    log.debug(f"Parallel OCR failed for {url}: {e}, fallback to sequential")
-                    # Fallback на последовательный OCR
-                    for page_num in ocr_candidates:
-                        try:
-                            ocr_text = self._ocr_page(doc[page_num], cfg.ocr_lang)
-                            if ocr_text and len(ocr_text) > len(full_text[page_num]):
-                                full_text[page_num] = ocr_text
-                                ocr_applied = True
-                        except Exception:
-                            pass
+                    log.debug(f"OCR failed on page {page_num} of {url}: {e}")
 
-        # Извлечение таблиц через pdfplumber (опционально)
-        if cfg.extract_tables:
-            for page_num in range(page_count):
+            # Извлечение таблиц через pdfplumber (опционально)
+            if cfg.extract_tables:
                 try:
                     tables = self._extract_tables_pdfplumber(pdf_path, page_num)
                     if tables:
@@ -116,9 +97,7 @@ class PdfCrawler(BaseCrawler):
                 except Exception as e:
                     log.debug(f"Table extraction failed on page {page_num}: {e}")
 
-        # Извлечение изображений
-        for page_num in range(page_count):
-            page = doc[page_num]
+            # Извлечение изображений
             try:
                 images = page.get_images(full=True)
             except Exception:
@@ -373,42 +352,3 @@ class PdfCrawler(BaseCrawler):
         from PIL import Image
         img = Image.open(io.BytesIO(pix.tobytes("png")))
         return pytesseract.image_to_string(img, lang=lang)
-
-    def _parallel_ocr(
-        self,
-        doc,
-        page_nums: list[int],
-        lang: str,
-        max_workers: int = 4,
-    ) -> dict[int, str]:
-        """Параллельный OCR для нескольких страниц PDF.
-
-        Использует ThreadPoolExecutor (tesseract хорошо параллелится через потоки,
-        т.к. основное время уходит на subprocess).
-
-        Возвращает dict {page_num: ocr_text}.
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        results: dict[int, str] = {}
-
-        def ocr_one(page_num: int) -> tuple[int, str]:
-            try:
-                page = doc[page_num]
-                text = self._ocr_page(page, lang)
-                return page_num, text or ""
-            except Exception as e:
-                log.debug(f"OCR failed for page {page_num}: {e}")
-                return page_num, ""
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(ocr_one, pn): pn for pn in page_nums}
-            for future in as_completed(futures):
-                try:
-                    page_num, text = future.result()
-                    results[page_num] = text
-                except Exception as e:
-                    log.debug(f"OCR future failed: {e}")
-                    results[futures[future]] = ""
-
-        return results

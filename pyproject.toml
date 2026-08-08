@@ -6,7 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "corpus-builder"
 version = "0.2.0"
 description = "Сборщик сырого корпуса для pretraining LLM с дедупликацией и нормализацией"
-requires-python = ">=3.10"
+# ВАЖНО: PySide6 (нужен для GUI) не имеет wheels для Python 3.14+.
+# Поддерживаемые версии: 3.10, 3.11, 3.12, 3.13.
+requires-python = ">=3.10,<3.14"
 authors = [{name = "CorpusBuilder"}]
 dependencies = [
     "pyyaml>=6.0",
@@ -31,6 +33,7 @@ dependencies = [
     "aiohttp>=3.9",
     "requests-cache>=1.2",
     "httpx>=0.27",
+    "selectolax>=0.3",
 ]
 
 [project.optional-dependencies]

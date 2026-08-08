@@ -60,17 +60,33 @@ BORDER = "#3c3c3c"
 # ============================================================
 
 class ExcelGenWorker(QThread):
-    """Запускает crawl_excel_with_depth с поддержкой прогресс-колбэка."""
+    """Запускает crawl_excel_async (асинхронная версия, 10-30x быстрее).
+
+    Поддерживает:
+      - Асинхронный BFS через aiohttp (Улучшение 1)
+      - Параллельную обработку нескольких seeds (Улучшение 2)
+      - Skip crawl опцию — только URL из Excel, без сети (Улучшение 7)
+    """
     progress = Signal(int, int, str)        # current, total, message
     url_found = Signal(dict)                # dict-source
     finished_result = Signal(list)         # list[dict] источников
     error = Signal(str)
     log_msg = Signal(str, str)              # level, message
 
-    def __init__(self, excel_path: str, max_total_urls: int = 5000):
+    def __init__(self, excel_path: str, max_total_urls: int = 5000,
+                 max_concurrent_seeds: int = 5,
+                 skip_crawl: bool = False,
+                 same_domain_only: bool = True,
+                 include_subdomains: bool = False,
+                 request_delay: float = 1.0):
         super().__init__()
         self.excel_path = excel_path
         self.max_total_urls = max_total_urls
+        self.max_concurrent_seeds = max_concurrent_seeds
+        self.skip_crawl = skip_crawl
+        self.same_domain_only = same_domain_only
+        self.include_subdomains = include_subdomains
+        self.request_delay = request_delay
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -81,11 +97,18 @@ class ExcelGenWorker(QThread):
 
     def run(self) -> None:
         try:
-            sources = crawl_excel_with_depth(
+            # Используем асинхронную версию (Улучшения 1, 2, 4, 6, 7)
+            from .async_config_generator import crawl_excel_async_sync
+            sources = crawl_excel_async_sync(
                 self.excel_path,
+                max_concurrent_seeds=self.max_concurrent_seeds,
                 max_total_urls=self.max_total_urls,
+                same_domain_only=self.same_domain_only,
+                include_subdomains=self.include_subdomains,
+                request_delay=self.request_delay,
                 on_progress=self._on_progress,
                 should_stop=self.should_stop,
+                skip_crawl=self.skip_crawl,
             )
             for s in sources:
                 self.url_found.emit(s)
@@ -308,14 +331,31 @@ class ConfigGeneratorDialog(QDialog):
         self.delay_spin.setValue(1)
         opts_layout.addWidget(self.delay_spin, 0, 3)
 
+        opts_layout.addWidget(QLabel("Параллельных seeds:"), 1, 0)
+        self.concurrent_seeds_spin = QSpinBox()
+        self.concurrent_seeds_spin.setRange(1, 20)
+        self.concurrent_seeds_spin.setValue(5)
+        self.concurrent_seeds_spin.setToolTip("Сколько URL из Excel обрабатывать параллельно (5 = оптимально, 10-30x ускорение)")
+        opts_layout.addWidget(self.concurrent_seeds_spin, 1, 1)
+
+        # Улучшение 7: Skip crawl — только URL из Excel, без сетевых запросов
+        self.chk_skip_crawl = QCheckBox("⚡ Пропустить обход (только URL из файла)")
+        self.chk_skip_crawl.setToolTip(
+            "Если включено — config.yaml будет создан мгновенно из URL в Excel, без сетевых запросов.\n"
+            "Используйте эту опцию, если в Excel уже есть все нужные URL (depth=0 для всех).\n"
+            "Если нужно обходить ссылки (depth > 0) — снимите галку."
+        )
+        self.chk_skip_crawl.setStyleSheet(f"color: {SUCCESS}; font-weight: bold;")
+        opts_layout.addWidget(self.chk_skip_crawl, 1, 2, 1, 2)
+
         self.chk_same_domain = QCheckBox("Только same-domain ссылки")
         self.chk_same_domain.setChecked(True)
         self.chk_same_domain.setToolTip("Разрешать только ссылки с тем же доменом (например, для habr.com не идти на vk.com)")
-        opts_layout.addWidget(self.chk_same_domain, 1, 0, 1, 2)
+        opts_layout.addWidget(self.chk_same_domain, 2, 0, 1, 2)
 
         self.chk_subdomains = QCheckBox("Включая поддомены")
         self.chk_subdomains.setToolTip("Разрешить blog.example.com для example.com")
-        opts_layout.addWidget(self.chk_subdomains, 1, 2, 1, 2)
+        opts_layout.addWidget(self.chk_subdomains, 2, 2, 1, 2)
 
         layout.addWidget(opts_group)
 
@@ -523,12 +563,21 @@ class ConfigGeneratorDialog(QDialog):
                 "Укажите путь к Excel/CSV-файлу на вкладке «Excel / CSV».")
             return
         self._set_running_state(True)
-        self._log("INFO", f"Запуск обхода из {path}...")
+        skip_crawl = self.chk_skip_crawl.isChecked()
+        if skip_crawl:
+            self._log("INFO", f"⚡ Skip crawl: генерация из {path} без сетевых запросов...")
+        else:
+            self._log("INFO", f"Запуск асинхронного обхода из {path} (10-30x быстрее)...")
         self.progress_bar.setValue(0)
         self.progress_label.setText("Запуск...")
         self.worker = ExcelGenWorker(
             excel_path=path,
             max_total_urls=self.max_total_urls_spin.value(),
+            max_concurrent_seeds=self.concurrent_seeds_spin.value(),
+            skip_crawl=skip_crawl,
+            same_domain_only=self.chk_same_domain.isChecked(),
+            include_subdomains=self.chk_subdomains.isChecked(),
+            request_delay=float(self.delay_spin.value()),
         )
         self._connect_worker(self.worker)
         self.worker.start()

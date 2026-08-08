@@ -14,41 +14,12 @@ TTL сервер вернёт 304 Not Modified, и мы переиспользу
 """
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from .logging_setup import get_logger
 from .models import AppConfig
 
 log = get_logger(__name__)
-
-
-def _optimize_sqlite_cache(cache_path: Path) -> None:
-    """Применить WAL-mode и другие оптимизации SQLite для кэша.
-
-    WAL (Write-Ahead Logging) позволяет:
-      - Параллельные чтения без блокировок
-      - Пакетная запись (вместо коммита на каждый INSERT)
-      - До 2x ускорения на операциях записи
-    """
-    sqlite_file = Path(str(cache_path) + ".sqlite")
-    if not sqlite_file.exists():
-        return  # БД ещё не создана — requests-cache создаст её сам
-    try:
-        conn = sqlite3.connect(str(sqlite_file))
-        # WAL: параллельные чтения, неблокирующая запись
-        conn.execute("PRAGMA journal_mode=WAL;")
-        # NORMAL: не дожидаемся fsync на каждый коммит (быстрее, но чуть безопаснее OFF)
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        # Больший кэш страниц в памяти (по умолчанию 2MB)
-        conn.execute("PRAGMA cache_size=-64000;")  # 64 MB
-        # temp_store=MEMORY: временные таблицы и индексы в RAM
-        conn.execute("PRAGMA temp_store=MEMORY;")
-        conn.commit()
-        conn.close()
-        log.debug(f"SQLite WAL enabled for {sqlite_file}")
-    except Exception as e:
-        log.warning(f"Failed to optimize SQLite cache: {e}")
 
 
 def make_cached_session(
@@ -59,8 +30,6 @@ def make_cached_session(
     """Создать requests.Session с кэшированием (если use_cache=True) или обычную.
 
     Если use_cache=False — возвращает обычную requests.Session.
-
-    С WAL-mode для параллельных чтений и неблокирующей записи.
     """
     from .robots import make_session
 
@@ -90,9 +59,5 @@ def make_cached_session(
         "Accept": "*/*",
         "Accept-Language": "ru,en;q=0.8",
     })
-
-    # Применяем оптимизации SQLite (WAL и др.)
-    _optimize_sqlite_cache(cache_path)
-
-    log.info(f"HTTP cache enabled: {cache_path}.sqlite (TTL={ttl_hours}h, WAL=on)")
+    log.info(f"HTTP cache enabled: {cache_path}.sqlite (TTL={ttl_hours}h)")
     return session

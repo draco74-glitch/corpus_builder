@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Iterable
 
 from datasketch import MinHash, MinHashLSH
 
@@ -92,89 +92,6 @@ def dedup_minhash(
             lsh.insert(url, mh)
 
     log.info(f"MinHash dedup (threshold={threshold}): {len(duplicates)} near-duplicates")
-    return duplicates
-
-
-def dedup_minhash_streaming(
-    corpus_file: str | Path,
-    num_perm: int = 128,
-    threshold: float = 0.85,
-    batch_size: int = 1000,
-    on_progress: "Callable[[int, int], None] | None" = None,
-) -> dict[str, str]:
-    """Streaming MinHash дедупликация для больших корпусов.
-
-    В отличие от dedup_minhash, не загружает все записи в память сразу.
-    Обрабатывает чанками, постепенно строя LSH-индекс.
-
-    Плюсы:
-      - Память: O(N) для LSH-индекса, но не O(N*M) для records+minhash
-      - Прогресс: можно показать прогресс по мере обработки
-    Минусы:
-      - Чуть медленнее из-за сериализации между чанками
-    """
-    from ..writer import open_corpus_reader
-
-    lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
-    duplicates: dict[str, str] = {}
-    processed = 0
-    total = 0
-
-    # Сначала посчитаем общее число строк для прогресса
-    with open_corpus_reader(corpus_file) as f:
-        total = sum(1 for _ in f)
-
-    batch: list[tuple[str, MinHash]] = []
-
-    with open_corpus_reader(corpus_file) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if r.get("status") != "ok":
-                continue
-            text = normalize_text(r.get("content") or "")
-            if not text:
-                continue
-            url = r.get("source_url", "")
-
-            mh = MinHash(num_perm=num_perm)
-            for s in shingles(text, k=5):
-                mh.update(s.encode("utf-8"))
-            batch.append((url, mh))
-            processed += 1
-
-            if len(batch) >= batch_size:
-                # Обрабатываем чанк: для каждой записи проверяем совпадения
-                for url, mh in batch:
-                    matches = lsh.query(mh)
-                    if matches:
-                        duplicates[url] = matches[0]
-                    else:
-                        try:
-                            lsh.insert(url, mh)
-                        except Exception:
-                            pass  # уже в индексе
-                batch.clear()
-                if on_progress:
-                    on_progress(processed, total)
-
-    # Финальный чанк
-    for url, mh in batch:
-        matches = lsh.query(mh)
-        if matches:
-            duplicates[url] = matches[0]
-        else:
-            try:
-                lsh.insert(url, mh)
-            except Exception:
-                pass
-
-    log.info(f"Streaming MinHash dedup: {len(duplicates)} duplicates out of {processed} records")
     return duplicates
 
 

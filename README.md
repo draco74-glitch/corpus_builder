@@ -8,29 +8,6 @@
 - **CLI** — `corpus-builder crawl` / `async-crawl` / `postprocess` / `stats` / `diff` (для серверов, CI, пакетных задач)
 - **GUI** — отдельное окно с кнопками «Загрузить config», «Папка корпуса», прогресс-баром, логом, таблицей последних записей, графиками статистики и аналитикой. Упаковывается в один `.exe` через PyInstaller.
 
-## Оптимизации производительности (14 улучшений)
-
-| # | Улучшение | Эффект |
-|---|-----------|--------|
-| 1 | **Нативный aiohttp для HTML** (`crawlers/async_html_crawler.py`) | 4-6x ускорение на больших списках URL |
-| 2 | **Буферизованная запись в JSONL** (`writer.py:CorpusWriter`) | 5-15% экономии на syscalls |
-| 3 | **Параллельный OCR для PDF** (`pdf_crawler._parallel_ocr`) | 10-20x на OCR-тяжёлых PDF |
-| 4 | **Connection pooling** (`robots.make_session`) | 1.3x на повторных соединениях |
-| 5 | **SQLite WAL-mode** для requests-cache (`http_cache._optimize_sqlite_cache`) | 1.4x на повторных прогонах |
-| 6 | **Multiprocessing пост-обработка** (`parallel_postproc.py`) | 3-5x на 8 ядрах |
-| 7 | **Streaming MinHash** (`dedup.dedup_minhash_streaming`) | экономия RAM для больших корпусов |
-| 8 | **Ленивая инициализация краулеров** (`crawlers/__init__.py`) | 400 мс экономии на старте |
-| 9 | **Pre-filter по robots.txt** (`robots.pre_filter_by_robots`) | 1 проверка на домен вместо N |
-| 10 | **HTTP/2 через httpx** (`httpx_client.py`) | 1.2x на HTTP/2 сайтах |
-| 11 | **Prefetch robots.txt** (`robots.prefetch_robots`) | параллельная загрузка для 50+ доменов |
-| 12 | **Сжатие JSONL на лету** (`writer.GzipCorpusWriter`) | 4-6x экономия места на диске |
-| 13 | **Memory-mapped чтение** (`mmap_reader.MmapJsonlReader`) | 2-3x на пост-обработке файлов > 1 ГБ |
-| 14 | **Incremental dedup** (`incremental_dedup.IncrementalDedup`) | 2-3x на повторных прогонах пост-обработки |
-
-**Ожидаемое ускорение**:
-- 1000 источников: 48 мин → 5-7 мин (~7x)
-- 10k источников: 5 часов → 45 минут (~7x)
-
 ## Возможности
 
 ### Типы источников (8 типов)

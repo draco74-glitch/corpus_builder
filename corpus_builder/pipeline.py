@@ -2,11 +2,6 @@
 
 Поддерживает hook-функции для GUI (progress callback, on_record, on_error,
 should_stop). Это позволяет запускать краулинг в QThread и обновлять UI без блокировки.
-
-Оптимизации производительности:
-  - CorpusWriter: буферизованная запись в JSONL (Улучшение 2)
-  - Pre-filter by robots.txt:批量 отсев запрещённых URL (Улучшение 9)
-  - Опциональное сжатие .jsonl.gz (Улучшение 12)
 """
 from __future__ import annotations
 
@@ -23,9 +18,8 @@ from .config import ensure_output_dirs, load_config
 from .crawlers import get_crawler
 from .logging_setup import get_logger, setup_logging
 from .models import AppConfig, CorpusRecord, ErrorRecord
-from .robots import RateLimiter, RobotsCache, make_session, pre_filter_by_robots
+from .robots import RateLimiter, RobotsCache, make_session
 from .state import State
-from .writer import CorpusWriter, GzipCorpusWriter, open_corpus_reader
 
 log = get_logger(__name__)
 
@@ -100,19 +94,6 @@ def run_crawl(
             log.info(f"  - {s.url} ({s.type})")
         return {"total": len(sources), "skipped": 0, "errors": 0}
 
-    # Pre-filter по robots.txt (Улучшение 9)
-    # Это позволяет сразу отсеять запрещённые URL, не дожидаясь их в цикле
-    skipped_by_robots = 0
-    def on_skip(url: str) -> None:
-        nonlocal skipped_by_robots
-        emit_log("INFO", f"Disallowed by robots.txt: {url}")
-        state.mark_done(url)
-        skipped_by_robots += 1
-
-    sources, _disallowed = pre_filter_by_robots(sources, robots, on_skip=on_skip)
-    if skipped_by_robots > 0:
-        log.info(f"Pre-filtered {skipped_by_robots} sources by robots.txt")
-
     log.info(f"Starting crawl: {len(sources)} sources, resume={resume}")
     if config.pipeline.progress_bar and on_progress is None:
         pbar = tqdm(sources, desc="crawling", unit="src")
@@ -125,14 +106,6 @@ def run_crawl(
     skipped = 0
     processed = 0
     stopped = False
-
-    # Буферизованный писатель (Улучшение 2) — буфер 100 записей
-    # Если путь оканчивается на .gz — используем GzipCorpusWriter (Улучшение 12)
-    corpus_path = Path(config.output.corpus_file)
-    if corpus_path.suffix == ".gz":
-        writer: CorpusWriter = GzipCorpusWriter(corpus_path, buffer_size=100)
-    else:
-        writer = CorpusWriter(corpus_path, buffer_size=100)
 
     def emit_log(level: str, msg: str) -> None:
         if on_log:
@@ -157,8 +130,7 @@ def run_crawl(
             skipped += 1
             continue
 
-        # robots.txt уже отфильтрован в pre_filter_by_robots выше
-        # (но оставляем проверку на всякий случай — для URL, добавленных после pre-filter)
+        # robots.txt
         if not robots.is_allowed(url):
             emit_log("INFO", f"Disallowed by robots.txt: {url}")
             skipped += 1
@@ -168,7 +140,7 @@ def run_crawl(
         # rate-limit
         rate_limiter.wait(url)
 
-        # Найти или создать краулер (ленивая инициализация — Улучшение 8)
+        # Найти или создать краулер
         try:
             crawler = crawler_cache.get(src.type)
             if crawler is None:
@@ -195,8 +167,7 @@ def run_crawl(
             )
 
         if record and record.status == "ok" and record.content:
-            # Буферизованная запись через CorpusWriter (Улучшение 2)
-            writer.write(record.model_dump())
+            append_record(record, config.output.corpus_file)
             state.mark_done(url)
             processed += 1
             if on_record:
@@ -212,11 +183,8 @@ def run_crawl(
         # Чекпойнт
         if (i + 1) % config.pipeline.save_checkpoint_every == 0:
             state.save()
-            writer.flush()  # периодический flush буфера
 
     state.save()
-    # Закрываем писатель — финальный flush буфера (Улучшение 2)
-    writer.close()
 
     stats = {
         "total": total,
@@ -226,7 +194,6 @@ def run_crawl(
         "done_total": state.done_count,
         "errors_total": state.error_count,
         "stopped": stopped,
-        "skipped_by_robots": skipped_by_robots,
     }
     log.info(f"Crawl finished: {stats}")
     return stats

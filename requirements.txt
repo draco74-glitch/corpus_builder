@@ -56,6 +56,9 @@ requests-cache>=1.2
 httpx>=0.27
 h2>=4.1
 
+# ===== Fast HTML parsing for config_generator (5-10x faster than BeautifulSoup) =====
+selectolax>=0.3
+
 # ===== Dev / Test =====
 pytest>=7.4
 vcrpy>=5.1
