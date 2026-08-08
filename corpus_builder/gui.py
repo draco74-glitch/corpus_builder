@@ -32,6 +32,7 @@ from matplotlib.figure import Figure
 
 from .app_settings import AppSettings
 from .settings_dialog import SettingsDialog
+from .auto_updater import AutoUpdater
 from .gui_improvements import (
     ConfigDropArea, RecordsTableContextMenu, LogSearchBar,
     SplitterStateSaver, ToastNotification, apply_theme, get_theme_qss, THEMES,
@@ -345,6 +346,11 @@ class MainWindow(QMainWindow):
         # === Меню Справка ===
         help_menu = menubar.addMenu("Справка")
 
+        act_check_update = QAction("🔄  Проверить обновления", self)
+        act_check_update.setShortcut(QKeySequence("Ctrl+U"))
+        act_check_update.triggered.connect(self._check_for_updates_manual)
+        help_menu.addAction(act_check_update)
+
         act_about = QAction("О программе", self)
         act_about.triggered.connect(self._show_about)
         help_menu.addAction(act_about)
@@ -503,6 +509,110 @@ class MainWindow(QMainWindow):
         w = self.app_settings.gui.window_width
         h = self.app_settings.gui.window_height
         self.resize(w, h)
+        # Проверка обновлений при старте (через 2 секунды, чтобы не блокировать UI)
+        QTimer.singleShot(2000, self._check_for_updates)
+
+    def _check_for_updates(self) -> None:
+        """Проверить наличие обновлений через GitHub Releases."""
+        try:
+            updater = AutoUpdater(
+                repo="draco74-glitch/corpus_builder",
+                current_version="0.2.0",
+            )
+            update_info = updater.check_for_updates()
+            if update_info:
+                version = update_info.get("version", "?")
+                self._show_toast(
+                    "Доступно обновление",
+                    f"Версия {version}. Нажмите для обновления.",
+                    "info"
+                )
+                self._has_update = update_info
+                self._updater = updater
+            else:
+                self._has_update = None
+                self._updater = None
+        except Exception as e:
+            log.debug(f"Update check failed: {e}")
+            self._has_update = None
+            self._updater = None
+
+    def _apply_update(self) -> None:
+        """Применить доступное обновление (если есть)."""
+        if not hasattr(self, "_updater") or not self._updater:
+            QMessageBox.information(self, "Обновление", "Нет доступных обновлений.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Обновление",
+            f"Доступна версия {self._has_update.get('version', '?')}\n\n"
+            f"Применить обновление сейчас?\n"
+            f"Программа будет перезапущена после обновления.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self.status.showMessage("Скачивание обновления...")
+            QApplication.processEvents()
+
+            success = self._updater.download_and_apply(
+                on_progress=lambda d, t: self.status.showMessage(
+                    f"Скачивание: {d}/{t} байт ({d*100//max(t,1)}%)"
+                )
+            )
+
+            if success:
+                self.status.showMessage("Обновление применено")
+                QMessageBox.information(
+                    self, "Обновление применено",
+                    "Обновление успешно применено.\n"
+                    "Пожалуйста, перезапустите CorpusBuilder."
+                )
+                QApplication.quit()
+            else:
+                self.status.showMessage("Обновление не удалось")
+                QMessageBox.warning(
+                    self, "Ошибка обновления",
+                    "Не удалось применить обновление.\n"
+                    "Скачайте полный дистрибутив с GitHub."
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+
+    def _check_for_updates_manual(self) -> None:
+        """Ручная проверка обновлений."""
+        self.status.showMessage("Проверка обновлений...")
+        QApplication.processEvents()
+        try:
+            updater = AutoUpdater(
+                repo="draco74-glitch/corpus_builder",
+                current_version="0.2.0",
+            )
+            update_info = updater.check_for_updates()
+            if update_info:
+                version = update_info.get("version", "?")
+                body = update_info.get("body", "")[:500]
+                reply = QMessageBox.question(
+                    self, "Доступно обновление",
+                    f"Версия {version} доступна.\n\n{body}\n\n"
+                    f"Применить обновление?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    self._updater = updater
+                    self._has_update = update_info
+                    self._apply_update()
+            else:
+                QMessageBox.information(
+                    self, "Обновления",
+                    "У вас установлена последняя версия."
+                )
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка проверки", str(e))
+        finally:
+            self.status.showMessage("Готов")
 
     def _build_ui(self) -> None:
         central = QWidget()
