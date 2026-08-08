@@ -1,16 +1,9 @@
-"""Дедупликация корпуса.
-
-Три уровня:
-  1. Точная (sha1 по нормализованному тексту) — самые быстрые дубли.
-  2. Нечёткая (MinHash по шинглам) — перефразирования, перепечатки.
-  3. По URL (канонизированный URL).
-  4. По sha1 изображений (для PDF-схем).
-"""
+"""Дедупликация корпуса."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from datasketch import MinHash, MinHashLSH
 
@@ -22,8 +15,8 @@ log = get_logger(__name__)
 
 
 def iter_records(corpus_file: str | Path) -> Iterable[dict]:
-    """Построчно прочитать JSONL."""
-    with open(corpus_file, "r", encoding="utf-8") as f:
+    from ..writer import open_corpus_reader
+    with open_corpus_reader(corpus_file) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -35,17 +28,12 @@ def iter_records(corpus_file: str | Path) -> Iterable[dict]:
 
 
 def dedup_exact(records: list[dict]) -> dict[str, str]:
-    """Точная дедупликация по sha1(content).
-
-    Возвращает {duplicate_url: original_url}.
-    """
-    seen: dict[str, str] = {}  # sha1 -> original_url
+    seen: dict[str, str] = {}
     duplicates: dict[str, str] = {}
     for r in records:
         if r.get("status") != "ok":
             continue
-        text = r.get("content") or ""
-        text = normalize_text(text)
+        text = normalize_text(r.get("content") or "")
         if not text:
             continue
         sha = text_sha1(text)
@@ -58,19 +46,10 @@ def dedup_exact(records: list[dict]) -> dict[str, str]:
     return duplicates
 
 
-def dedup_minhash(
-    records: list[dict],
-    num_perm: int = 128,
-    threshold: float = 0.85,
-) -> dict[str, str]:
-    """Нечёткая дедупликация через MinHash LSH.
-
-    Возвращает {duplicate_url: original_url}.
-    """
+def dedup_minhash(records: list[dict], num_perm: int = 128,
+                  threshold: float = 0.85) -> dict[str, str]:
     lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
-    minhashes: dict[str, MinHash] = {}
     duplicates: dict[str, str] = {}
-
     for r in records:
         if r.get("status") != "ok":
             continue
@@ -81,22 +60,83 @@ def dedup_minhash(
         mh = MinHash(num_perm=num_perm)
         for s in shingles(text, k=5):
             mh.update(s.encode("utf-8"))
-        minhashes[url] = mh
-
-        # Проверим, есть ли уже похожие
         matches = lsh.query(mh)
         if matches:
-            # Берём первый как оригинал
             duplicates[url] = matches[0]
         else:
             lsh.insert(url, mh)
-
     log.info(f"MinHash dedup (threshold={threshold}): {len(duplicates)} near-duplicates")
     return duplicates
 
 
+def dedup_minhash_streaming(corpus_file: str | Path, num_perm: int = 128,
+                            threshold: float = 0.85, batch_size: int = 1000,
+                            on_progress: Callable[[int, int], None] | None = None
+                            ) -> dict[str, str]:
+    """Streaming MinHash дедупликация для больших корпусов (Улучшение 7)."""
+    from ..writer import open_corpus_reader
+
+    lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
+    duplicates: dict[str, str] = {}
+    processed = 0
+    total = 0
+
+    with open_corpus_reader(corpus_file) as f:
+        total = sum(1 for _ in f)
+
+    batch: list[tuple[str, MinHash]] = []
+
+    with open_corpus_reader(corpus_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("status") != "ok":
+                continue
+            text = normalize_text(r.get("content") or "")
+            if not text:
+                continue
+            url = r.get("source_url", "")
+
+            mh = MinHash(num_perm=num_perm)
+            for s in shingles(text, k=5):
+                mh.update(s.encode("utf-8"))
+            batch.append((url, mh))
+            processed += 1
+
+            if len(batch) >= batch_size:
+                for url, mh in batch:
+                    matches = lsh.query(mh)
+                    if matches:
+                        duplicates[url] = matches[0]
+                    else:
+                        try:
+                            lsh.insert(url, mh)
+                        except Exception:
+                            pass
+                batch.clear()
+                if on_progress:
+                    on_progress(processed, total)
+
+    for url, mh in batch:
+        matches = lsh.query(mh)
+        if matches:
+            duplicates[url] = matches[0]
+        else:
+            try:
+                lsh.insert(url, mh)
+            except Exception:
+                pass
+
+    log.info(f"Streaming MinHash dedup: {len(duplicates)} duplicates out of {processed} records")
+    return duplicates
+
+
 def dedup_by_url(records: list[dict]) -> dict[str, str]:
-    """Дедупликация по канонизированному URL."""
     seen: dict[str, str] = {}
     duplicates: dict[str, str] = {}
     for r in records:
@@ -113,10 +153,6 @@ def dedup_by_url(records: list[dict]) -> dict[str, str]:
 
 
 def dedup_images(records: list[dict]) -> dict[str, str]:
-    """Дедупликация по sha1 изображений.
-
-    Возвращает {image_local_path: original_local_path}.
-    """
     seen: dict[str, str] = {}
     duplicates: dict[str, str] = {}
     for r in records:
@@ -134,10 +170,6 @@ def dedup_images(records: list[dict]) -> dict[str, str]:
 
 
 def run_dedup(corpus_file: str | Path, output_file: str | Path, config: DedupConfig) -> dict:
-    """Полный пайплайн дедупликации.
-
-    Читает corpus_file, помечает дубликаты, пишет в output_file.
-    """
     corpus_file = Path(corpus_file)
     output_file = Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +183,6 @@ def run_dedup(corpus_file: str | Path, output_file: str | Path, config: DedupCon
         duplicates.update(dedup_exact(records))
 
     if config.minhash:
-        # Только для тех, кто не прошёл exact-проверку, чтобы не делать лишнюю работу
         remaining = [r for r in records if r.get("source_url") not in duplicates]
         duplicates.update(dedup_minhash(
             remaining,
@@ -166,7 +197,6 @@ def run_dedup(corpus_file: str | Path, output_file: str | Path, config: DedupCon
     if config.dedup_images:
         image_dups = dedup_images(records)
 
-    # Записать результат
     kept = 0
     removed = 0
     with open(output_file, "w", encoding="utf-8") as f:
@@ -181,7 +211,6 @@ def run_dedup(corpus_file: str | Path, output_file: str | Path, config: DedupCon
                 r["duplicate_of"] = None
                 kept += 1
 
-            # Пометить дубликаты изображений
             if image_dups:
                 new_files = []
                 for df in r.get("downloaded_files", []):
@@ -195,9 +224,7 @@ def run_dedup(corpus_file: str | Path, output_file: str | Path, config: DedupCon
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
     stats = {
-        "total": len(records),
-        "kept": kept,
-        "removed": removed,
+        "total": len(records), "kept": kept, "removed": removed,
         "image_duplicates": len(image_dups),
     }
     log.info(f"Dedup done: {stats}")
