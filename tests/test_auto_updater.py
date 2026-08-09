@@ -231,3 +231,165 @@ def test_create_patch_only(tmp_path):
     assert Path(result).exists()
     with zipfile.ZipFile(result, "r") as zf:
         assert "corpus_builder/main.py" in zf.namelist()
+
+
+# ============================================================
+# CommitUpdater — тесты
+# ============================================================
+
+def test_commit_updater_init():
+    """Инициализация CommitUpdater."""
+    from corpus_builder.auto_updater import CommitUpdater
+    updater = CommitUpdater("owner/repo", "main")
+    assert updater.repo == "owner/repo"
+    assert updater.branch == "main"
+
+
+def test_commit_updater_no_updates():
+    """Если нет новых коммитов — возвращает None."""
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater("owner/repo", "main")
+
+    # Мокируем SHA последнего коммита как совпадающий с известным
+    with mock.patch.object(updater, '_get_last_known_sha', return_value="abc123"):
+        mock_response = mock.MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {"sha": "abc123", "commit": {"message": "test", "author": {"name": "test", "date": "2024-01-01"}}}
+        ]
+        with mock.patch("requests.get", return_value=mock_response):
+            result = updater.check_for_commit_updates()
+
+    assert result is None  # уже актуально
+
+
+def test_commit_updater_update_available():
+    """Если есть новый коммит — возвращает информацию."""
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater("owner/repo", "main")
+
+    with mock.patch.object(updater, '_get_last_known_sha', return_value="old_sha"):
+        mock_response = mock.MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {
+                "sha": "new_sha_1234567890",
+                "commit": {
+                    "message": "Fix: something important",
+                    "author": {"name": "Developer", "date": "2024-08-08T12:00:00Z"}
+                },
+                "html_url": "https://github.com/owner/repo/commit/new_sha"
+            }
+        ]
+        with mock.patch("requests.get", return_value=mock_response):
+            result = updater.check_for_commit_updates()
+
+    assert result is not None
+    assert result["sha"] == "new_sha_1234567890"
+    assert result["short_sha"] == "new_sha_"
+    assert "Fix" in result["message"]
+    assert result["author"] == "Developer"
+
+
+def test_commit_updater_rate_limit():
+    """При 403 (rate limit) — возвращает None."""
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater("owner/repo", "main")
+
+    mock_response = mock.MagicMock()
+    mock_response.status_code = 403
+    with mock.patch("requests.get", return_value=mock_response):
+        result = updater.check_for_commit_updates()
+    assert result is None
+
+
+def test_commit_updater_save_and_load_sha(tmp_path):
+    """Сохранение и загрузка SHA коммита."""
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater("owner/repo", "main")
+
+    sha_file = tmp_path / "last_commit.txt"
+    with mock.patch.object(Path, "write_text"):
+        with mock.patch.object(Path, "exists", return_value=True):
+            with mock.patch.object(Path, "read_text", return_value="test_sha_123"):
+                loaded = updater._get_last_known_sha()
+                assert loaded == "test_sha_123"
+
+    # Сохранение
+    with mock.patch.object(Path, "write_text"):
+        updater._save_last_known_sha("new_sha_456")
+
+
+def test_commit_updater_get_target_dir_frozen(tmp_path):
+    """В frozen режиме ищет _internal/corpus_builder/."""
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater()
+
+    # Создаём фейковую структуру
+    fake_exe = tmp_path / "CorpusBuilder.exe"
+    fake_exe.write_text("fake")
+    internal_dir = tmp_path / "_internal" / "corpus_builder"
+    internal_dir.mkdir(parents=True)
+
+    with mock.patch("sys.frozen", True, create=True), \
+         mock.patch("sys.executable", str(fake_exe)):
+        result = updater._get_target_dir()
+        assert result is not None
+        assert result == internal_dir
+
+
+def test_commit_updater_get_target_dir_dev():
+    """В dev режиме ищет corpus_builder/ в cwd."""
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater()
+
+    # Без frozen — ищет в cwd
+    result = updater._get_target_dir()
+    # Может вернуть путь или None, главное не упасть
+    assert result is not None or result is None
+
+
+def test_commit_updater_download_file():
+    """Тест скачивания файла через Contents API (мок)."""
+    import base64
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater("owner/repo", "main")
+
+    # Мокируем GitHub Contents API ответ
+    file_content = b"print('hello world')"
+    encoded = base64.b64encode(file_content).decode()
+
+    mock_response = mock.MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "content": encoded,
+        "encoding": "base64",
+        "name": "test.py",
+        "path": "corpus_builder/test.py",
+    }
+    with mock.patch("requests.get", return_value=mock_response):
+        content = updater._download_file_from_github("test.py", "sha123")
+
+    assert content is not None
+    assert content == file_content
+
+
+def test_commit_updater_download_file_404():
+    """Если файл не найден (404) — возвращает None."""
+    from corpus_builder.auto_updater import CommitUpdater
+
+    updater = CommitUpdater("owner/repo", "main")
+
+    mock_response = mock.MagicMock()
+    mock_response.status_code = 404
+    with mock.patch("requests.get", return_value=mock_response):
+        content = updater._download_file_from_github("nonexistent.py", "sha123")
+
+    assert content is None

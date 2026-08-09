@@ -377,3 +377,340 @@ class AutoUpdater:
         size = output_path.stat().st_size
         log.info(f"Patch ZIP created: {output_path} ({size} bytes)")
         return str(output_path)
+
+
+# ============================================================
+# Commit-based updates: подтягивание .py файлов с main ветки
+# ============================================================
+
+GITHUB_API_COMMITS = "https://api.github.com/repos/{repo}/commits?sha=main&per_page=1"
+GITHUB_API_CONTENTS = "https://api.github.com/repos/{repo}/contents/{path}?ref={ref}"
+GITHUB_API_TREE = "https://api.github.com/repos/{repo}/git/trees/{sha}?recursive=1"
+
+
+class CommitUpdater:
+    """Подтягивание обновлений напрямую из коммитов GitHub (без релизов).
+
+    Проверяет последний коммит в main ветке, сравнивает SHA с сохранённым,
+    и если есть новый коммит — скачивает все .py файлы из corpus_builder/
+    через GitHub Contents API и заменяет их в _internal/corpus_builder/.
+
+    Преимущества:
+      - Не нужно создавать GitHub Releases
+      - Не нужно пересобирать .exe
+      - Обновление через несколько секунд после push в main
+      - Скачивает только .py файлы (~150 КБ), не всё
+
+    Использование:
+        updater = CommitUpdater("draco74-glitch/corpus_builder")
+        if updater.check_for_commit_updates():
+            updater.apply_commit_update()
+    """
+
+    def __init__(
+        self,
+        repo: str = "draco74-glitch/corpus_builder",
+        branch: str = "main",
+    ):
+        self.repo = repo
+        self.branch = branch
+        self._latest_sha: str | None = None
+        self._commit_info: dict | None = None
+
+    def _get_headers(self) -> dict:
+        """HTTP headers для GitHub API с токеном если есть."""
+        headers = {"Accept": "application/vnd.github+json"}
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _get_last_known_sha(self) -> str | None:
+        """Получить SHA последнего применённого коммита.
+
+        Хранится в файле .corpus_builder_last_commit.txt рядом с .exe
+        (frozen mode) или в home (dev mode).
+        """
+        if getattr(sys, "frozen", False):
+            sha_file = Path(sys.executable).parent / ".corpus_builder_last_commit.txt"
+        else:
+            sha_file = Path.home() / ".corpus_builder_last_commit.txt"
+
+        try:
+            if sha_file.exists():
+                return sha_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+        return None
+
+    def _save_last_known_sha(self, sha: str) -> None:
+        """Сохранить SHA последнего применённого коммита."""
+        if getattr(sys, "frozen", False):
+            sha_file = Path(sys.executable).parent / ".corpus_builder_last_commit.txt"
+        else:
+            sha_file = Path.home() / ".corpus_builder_last_commit.txt"
+        try:
+            sha_file.write_text(sha, encoding="utf-8")
+        except Exception as e:
+            log.warning(f"Cannot save last commit SHA: {e}")
+
+    def check_for_commit_updates(self) -> dict | None:
+        """Проверить, есть ли новые коммиты в main ветке.
+
+        Возвращает dict с информацией о коммите, если есть обновление,
+        иначе None.
+        """
+        try:
+            url = GITHUB_API_COMMITS.format(repo=self.repo)
+            r = requests.get(url, headers=self._get_headers(), timeout=15)
+            if r.status_code == 403:
+                log.warning("GitHub API rate limit hit for /commits")
+                return None
+            r.raise_for_status()
+            commits = r.json()
+            if not commits:
+                log.info("No commits found")
+                return None
+
+            latest = commits[0]
+            latest_sha = latest.get("sha", "")
+            if not latest_sha:
+                log.warning("Cannot determine latest commit SHA")
+                return None
+
+            last_known = self._get_last_known_sha()
+            if last_known == latest_sha:
+                log.info(f"Already up to date (commit {latest_sha[:8]})")
+                return None
+
+            self._latest_sha = latest_sha
+            self._commit_info = latest
+
+            commit_msg = (latest.get("commit", {}).get("message", "") or "")[:200]
+            author = (latest.get("commit", {}).get("author", {}).get("name", "")) or "unknown"
+            date = (latest.get("commit", {}).get("author", {}).get("date", "")) or ""
+
+            log.info(f"Update available: commit {latest_sha[:8]} by {author}")
+            log.info(f"  Message: {commit_msg[:80]}")
+
+            return {
+                "sha": latest_sha,
+                "short_sha": latest_sha[:8],
+                "message": commit_msg,
+                "author": author,
+                "date": date,
+                "url": latest.get("html_url", ""),
+            }
+
+        except Exception as e:
+            log.warning(f"Failed to check for commit updates: {e}")
+            return None
+
+    def _get_py_files_in_repo(self, sha: str) -> list[str]:
+        """Получить список всех .py файлов в corpus_builder/ через Git Tree API.
+
+        Возвращает список относительных путей (например: "gui.py", "crawlers/html_crawler.py").
+        """
+        try:
+            url = GITHUB_API_TREE.format(repo=self.repo, sha=sha)
+            r = requests.get(url, headers=self._get_headers(), timeout=20)
+            r.raise_for_status()
+            tree = r.json()
+
+            py_files: list[str] = []
+            for item in tree.get("tree", []):
+                path = item.get("path", "")
+                # Только .py файлы в corpus_builder/
+                if path.startswith("corpus_builder/") and path.endswith(".py"):
+                    # Убираем префикс corpus_builder/
+                    rel_path = path[len("corpus_builder/"):]
+                    py_files.append(rel_path)
+
+            log.info(f"Found {len(py_files)} .py files in repository")
+            return py_files
+
+        except Exception as e:
+            log.warning(f"Failed to get file tree: {e}")
+            return []
+
+    def _download_file_from_github(
+        self, rel_path: str, sha: str, on_progress=None, total_files: int = 0,
+        downloaded_count: int = 0,
+    ) -> bytes | None:
+        """Скачать один .py файл из GitHub через Contents API.
+
+        Возвращает содержимое файла в bytes (декодированное из base64).
+        """
+        try:
+            # Contents API возвращает base64-кодированный контент
+            github_path = f"corpus_builder/{rel_path}"
+            url = GITHUB_API_CONTENTS.format(
+                repo=self.repo, path=github_path, ref=sha
+            )
+            r = requests.get(url, headers=self._get_headers(), timeout=20)
+            if r.status_code == 404:
+                log.debug(f"File not found in repo: {rel_path}")
+                return None
+            r.raise_for_status()
+            data = r.json()
+
+            # Contents API возвращает content в base64
+            import base64
+            content_b64 = data.get("content", "")
+            if not content_b64:
+                return None
+
+            # Декодируем base64 (GitHub отдаёт с переносами строк)
+            content_b64 = content_b64.replace("\n", "")
+            content = base64.b64decode(content_b64)
+
+            if on_progress and total_files > 0:
+                on_progress(downloaded_count + 1, total_files, f"Скачано: {rel_path}")
+
+            return content
+
+        except Exception as e:
+            log.debug(f"Failed to download {rel_path}: {e}")
+            return None
+
+    def apply_commit_update(
+        self,
+        on_progress=None,
+    ) -> dict:
+        """Скачать и применить обновление из последнего коммита.
+
+        Скачивает все .py файлы из corpus_builder/ и заменяет их
+        в _internal/corpus_builder/ (one-dir mode) или в исходной папке (dev mode).
+
+        Возвращает dict с результатом:
+            {success: bool, files_updated: int, files_failed: int, sha: str}
+        """
+        if not self._latest_sha:
+            info = self.check_for_commit_updates()
+            if not info:
+                return {"success": False, "error": "No updates available"}
+            self._latest_sha = info["sha"]
+
+        sha = self._latest_sha
+
+        # Получаем список .py файлов
+        py_files = self._get_py_files_in_repo(sha)
+        if not py_files:
+            return {"success": False, "error": "No .py files found in repository"}
+
+        # Определяем целевую папку
+        target_dir = self._get_target_dir()
+        if not target_dir:
+            return {"success": False, "error": "Cannot determine target directory"}
+
+        log.info(f"Updating {len(py_files)} files in {target_dir}...")
+
+        # Backup
+        backup_dir = target_dir.parent / "corpus_builder_backup"
+        try:
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            shutil.copytree(target_dir, backup_dir)
+            log.info(f"Backup created: {backup_dir}")
+        except Exception as e:
+            log.warning(f"Backup failed: {e}")
+
+        # Скачиваем и заменяем каждый файл
+        updated = 0
+        failed = 0
+        failed_files: list[str] = []
+
+        for i, rel_path in enumerate(py_files):
+            content = self._download_file_from_github(
+                rel_path, sha, on_progress, len(py_files), i
+            )
+            if content is None:
+                failed += 1
+                failed_files.append(rel_path)
+                continue
+
+            # Создаём подпапки если нужно
+            target_file = target_dir / rel_path
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                target_file.write_bytes(content)
+                updated += 1
+            except Exception as e:
+                log.warning(f"Cannot write {rel_path}: {e}")
+                failed += 1
+                failed_files.append(rel_path)
+
+        if on_progress:
+            on_progress(len(py_files), len(py_files),
+                       f"Готово: обновлено {updated}, ошибок {failed}")
+
+        if updated > 0:
+            self._save_last_known_sha(sha)
+            log.info(f"Update applied: {updated} files updated, {failed} failed")
+        else:
+            log.warning("No files were updated")
+
+        return {
+            "success": updated > 0,
+            "files_updated": updated,
+            "files_failed": failed,
+            "failed_files": failed_files,
+            "sha": sha,
+            "short_sha": sha[:8],
+        }
+
+    def _get_target_dir(self) -> Path | None:
+        """Определить папку corpus_builder/ для обновления.
+
+        - Frozen (one-dir): _internal/corpus_builder/ рядом с .exe
+        - Dev: corpus_builder/ в текущей директории
+        """
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).parent
+            candidates = [
+                exe_dir / "_internal" / "corpus_builder",
+                exe_dir / "corpus_builder",
+            ]
+            for c in candidates:
+                if c.exists() and c.is_dir():
+                    return c
+            # Если папки нет — создаём
+            target = exe_dir / "_internal" / "corpus_builder"
+            target.mkdir(parents=True, exist_ok=True)
+            return target
+        else:
+            # Dev mode: ищем corpus_builder/ в cwd или рядом
+            cwd = Path.cwd()
+            if (cwd / "corpus_builder").is_dir():
+                return cwd / "corpus_builder"
+            # Если запускаем из corpus_builder/
+            if cwd.name == "corpus_builder":
+                return cwd
+            return None
+
+    def restore_backup(self) -> bool:
+        """Восстановить из backup если обновление сломало программу."""
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).parent
+            backup_dir = exe_dir / "_internal" / "corpus_builder_backup"
+        else:
+            backup_dir = Path.cwd() / "corpus_builder_backup"
+
+        if not backup_dir.exists():
+            log.warning("No backup found")
+            return False
+
+        target_dir = self._get_target_dir()
+        if not target_dir:
+            return False
+
+        try:
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            shutil.copytree(backup_dir, target_dir)
+            log.info("Restored from backup")
+            return True
+        except Exception as e:
+            log.error(f"Restore failed: {e}")
+            return False

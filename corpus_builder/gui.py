@@ -32,7 +32,7 @@ from matplotlib.figure import Figure
 
 from .app_settings import AppSettings
 from .settings_dialog import SettingsDialog
-from .auto_updater import AutoUpdater
+from .auto_updater import AutoUpdater, CommitUpdater
 from .gui_improvements import (
     ConfigDropArea, RecordsTableContextMenu, LogSearchBar,
     SplitterStateSaver, ToastNotification, apply_theme, get_theme_qss, THEMES,
@@ -513,21 +513,23 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self._check_for_updates)
 
     def _check_for_updates(self) -> None:
-        """Проверить наличие обновлений через GitHub Releases."""
+        """Проверить наличие новых коммитов на GitHub (без релизов)."""
         try:
-            updater = AutoUpdater(
+            updater = CommitUpdater(
                 repo="draco74-glitch/corpus_builder",
-                current_version="0.2.0",
+                branch="main",
             )
-            update_info = updater.check_for_updates()
-            if update_info:
-                version = update_info.get("version", "?")
+            commit_info = updater.check_for_commit_updates()
+            if commit_info:
+                short_sha = commit_info.get("short_sha", "?")
+                message = commit_info.get("message", "")[:100]
+                author = commit_info.get("author", "")
                 self._show_toast(
                     "Доступно обновление",
-                    f"Версия {version}. Нажмите для обновления.",
+                    f"Коммит {short_sha} от {author}\n{message}",
                     "info"
                 )
-                self._has_update = update_info
+                self._has_update = commit_info
                 self._updater = updater
             else:
                 self._has_update = None
@@ -538,16 +540,24 @@ class MainWindow(QMainWindow):
             self._updater = None
 
     def _apply_update(self) -> None:
-        """Применить доступное обновление (если есть)."""
+        """Применить обновление (скачать .py файлы из последнего коммита)."""
         if not hasattr(self, "_updater") or not self._updater:
             QMessageBox.information(self, "Обновление", "Нет доступных обновлений.")
             return
 
+        commit_info = getattr(self, "_has_update", {}) or {}
+        short_sha = commit_info.get("short_sha", "?")
+        message = commit_info.get("message", "")[:200]
+        author = commit_info.get("author", "")
+
         reply = QMessageBox.question(
-            self, "Обновление",
-            f"Доступна версия {self._has_update.get('version', '?')}\n\n"
-            f"Применить обновление сейчас?\n"
-            f"Программа будет перезапущена после обновления.",
+            self, "Обновление из коммита",
+            f"Коммит: {short_sha}\n"
+            f"Автор: {author}\n"
+            f"Сообщение: {message}\n\n"
+            f"Применить обновление?\n"
+            f"Будут скачаны и заменены .py файлы.\n"
+            f"Программу нужно будет перезапустить.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
         )
         if reply != QMessageBox.Yes:
@@ -557,57 +567,67 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Скачивание обновления...")
             QApplication.processEvents()
 
-            success = self._updater.download_and_apply(
-                on_progress=lambda d, t: self.status.showMessage(
-                    f"Скачивание: {d}/{t} байт ({d*100//max(t,1)}%)"
+            result = self._updater.apply_commit_update(
+                on_progress=lambda d, t, msg: self.status.showMessage(
+                    f"[{d}/{t}] {msg}"
                 )
             )
 
-            if success:
-                self.status.showMessage("Обновление применено")
+            if result.get("success"):
+                updated = result.get("files_updated", 0)
+                failed = result.get("files_failed", 0)
+                self.status.showMessage(f"Обновлено {updated} файлов")
                 QMessageBox.information(
                     self, "Обновление применено",
-                    "Обновление успешно применено.\n"
-                    "Пожалуйста, перезапустите CorpusBuilder."
+                    f"Успешно обновлено .py файлов: {updated}\n"
+                    f"Ошибок: {failed}\n\n"
+                    f"Пожалуйста, перезапустите CorpusBuilder\n"
+                    f"для применения изменений."
                 )
                 QApplication.quit()
             else:
+                error = result.get("error", "Неизвестная ошибка")
                 self.status.showMessage("Обновление не удалось")
                 QMessageBox.warning(
                     self, "Ошибка обновления",
-                    "Не удалось применить обновление.\n"
-                    "Скачайте полный дистрибутив с GitHub."
+                    f"Не удалось применить обновление:\n{error}"
                 )
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
 
     def _check_for_updates_manual(self) -> None:
-        """Ручная проверка обновлений."""
-        self.status.showMessage("Проверка обновлений...")
+        """Ручная проверка обновлений (по коммитам)."""
+        self.status.showMessage("Проверка коммитов на GitHub...")
         QApplication.processEvents()
         try:
-            updater = AutoUpdater(
+            updater = CommitUpdater(
                 repo="draco74-glitch/corpus_builder",
-                current_version="0.2.0",
+                branch="main",
             )
-            update_info = updater.check_for_updates()
-            if update_info:
-                version = update_info.get("version", "?")
-                body = update_info.get("body", "")[:500]
+            commit_info = updater.check_for_commit_updates()
+            if commit_info:
+                short_sha = commit_info.get("short_sha", "?")
+                message = commit_info.get("message", "")[:300]
+                author = commit_info.get("author", "")
+                date = commit_info.get("date", "")
+
                 reply = QMessageBox.question(
                     self, "Доступно обновление",
-                    f"Версия {version} доступна.\n\n{body}\n\n"
+                    f"Новый коммит: {short_sha}\n"
+                    f"Автор: {author}\n"
+                    f"Дата: {date}\n"
+                    f"Сообщение: {message}\n\n"
                     f"Применить обновление?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
                 )
                 if reply == QMessageBox.Yes:
                     self._updater = updater
-                    self._has_update = update_info
+                    self._has_update = commit_info
                     self._apply_update()
             else:
                 QMessageBox.information(
                     self, "Обновления",
-                    "У вас установлена последняя версия."
+                    "У вас последняя версия (все коммиты применены)."
                 )
         except Exception as e:
             QMessageBox.warning(self, "Ошибка проверки", str(e))
