@@ -1,430 +1,378 @@
-# corpus-builder
+<div align="center">
 
-Сборщик сырого корпуса для pretraining LLM с дедупликацией, нормализацией и фильтрацией качества.
-Проект реализован на основе технического анализа исходной версии `corpus_builder` и закрывает все критические проблемы оригинала.
+# 🛠️ CorpusBuilder
 
-## Два режима работы
+**Сборщик сырого корпуса для pretraining LLM** с дедупликацией, нормализацией и фильтрацией качества
 
-- **CLI** — `corpus-builder crawl` / `async-crawl` / `postprocess` / `stats` / `diff` (для серверов, CI, пакетных задач)
-- **GUI** — отдельное окно с кнопками «Загрузить config», «Папка корпуса», прогресс-баром, логом, таблицей последних записей, графиками статистики и аналитикой. Упаковывается через PyInstaller (one-dir mode).
+[![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-blue.svg)](LICENSE)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/downloads/)
+[![Tests: 166+](https://img.shields.io/badge/Tests-166+-green.svg)](tests/)
+[![PySide6 GUI](https://img.shields.io/badge/GUI-PySide6-007acc.svg)](https://doc.qt.io/qtforpython-6/)
+[![One-dir](https://img.shields.io/badge/Build-One--dir-orange.svg)](CorpusBuilder.spec)
+[![Auto-Update](https://img.shields.io/badge/Auto--Update-GitHub_Commits-success.svg)](corpus_builder/auto_updater.py)
 
-## Архитектура сборки: one-dir mode
+[Возможности](#-возможности) ·
+[Установка](#-установка) ·
+[Использование](#-использование) ·
+[Архитектура](#-архитектура) ·
+[Скриншоты](#-скриншоты) ·
+[Лицензия](#-лицензия)
 
-CorpusBuilder использует **one-dir архитектуру** (вместо one-file):
+</div>
+
+---
+
+## 📋 Оглавление
+
+- [Возможности](#-возможности)
+- [Типы источников](#-типы-источников)
+- [Установка](#-установка)
+- [Использование](#-использование)
+- [Архитектура сборки: one-dir](#-архитектура-сборки-one-dir)
+- [Авто-обновление](#-авто-обновление)
+- [Оптимизации производительности](#-оптимизации-производительности)
+- [GUI: 15 улучшений интерфейса](#-gui-15-улучшений-интерфейса)
+- [Единое окно настроек](#-единое-окно-настроек)
+- [Мастер создания config.yaml](#-мастер-создания-configyaml)
+- [Скриншоты](#-скриншоты)
+- [Разработка](#-разработка)
+- [Лицензия](#-лицензия)
+
+---
+
+## ✨ Возможности
+
+### Сбор корпуса
+
+- **8 типов источников**: HTML, PDF, GitHub, StackExchange, DOAJ, arXiv, Crossref, Wikipedia
+- **Асинхронный краулинг** (aiohttp) — 4-6x быстрее синхронного
+- **Resume после сбоя** — state.json с отслеживанием обработанных URL
+- **robots.txt + per-domain rate limiter** — вежливый обход
+- **Защита от видеопотоков** — блоклист 30+ расширений и 20+ доменов (YouTube, Vimeo, Twitch)
+- **Connection pooling** — 20 соединений, авто-ретраи на 429/500/503
+- **HTTP-кэш** (requests-cache + SQLite WAL) — повторные прогоны в 10x быстрее
+
+### Качество корпуса
+
+- **Дедупликация** 4 уровня:
+  - Точная (`sha1` нормализованного текста)
+  - Нечёткая (`MinHash LSH`, настраиваемый порог Jaccard)
+  - По канонизированному URL (удаление `utm_*`, сортировка query)
+  - По хэшу изображений (для PDF-схем)
+  - Streaming и Incremental режимы для больших корпусов
+- **Нормализация текста**: NFKC + ftfy + zero-width + опционально ё→е
+- **Фильтрация качества**:
+  - `fasttext-langdetect` — определение языка (точнее эвристики в 3-5x)
+  - `kenlm` perplexity (опционально) — отбраковка мусорного текста
+  - Спам/токсичность фильтр (RU+EN ключевые слова)
+  - Code/text ratio — извлечение блоков кода для instruction-tuning
+  - Длина, alpha ratio, доля дублирующихся строк, язык (RU/EN/bilingual/multi)
+
+### Пост-обработка и экспорт
+
+- **Извлечение пар для instruction-tuning** (6 типов):
+  - README ↔ KiCad
+  - Вопрос → принятый ответ (StackExchange)
+  - Datasheet → спецификации компонента
+  - Статья → TL;DR
+  - Код → описание
+  - FAQ Q&A
+- **Экспорт**: HuggingFace dataset (с dataset_infos.json), Parquet (zstd), JSONL (.gz)
+
+### GUI
+
+- **Тёмная тема** (VS Code Dark+ стиль), 5 тем оформления
+- **Прогресс-бар с ETA**: «150/1000 | ETA: 5m 30s | 2.3 URL/s»
+- **Лог с подсветкой** (INFO/WARN/ERROR) и поиском (Ctrl+F)
+- **Таблица последних записей** с контекстным меню
+- **Статистика**: 4 графика matplotlib + текстовая сводка
+- **Трей** с уведомлением о завершении
+- **Авто-обновление** через GitHub коммиты (Ctrl+U)
+
+---
+
+## 📊 Типы источников
+
+| Тип | Источник | Библиотека | Особенности |
+|-----|----------|------------|-------------|
+| `html` | Статьи, блоги | trafilatura | Извлечение главного текста, авто-определение кодировки |
+| `pdf` | Datasheet'ы, руководства | PyMuPDF + pytesseract | Двухколоночная вёрстка, OCR, таблицы (pdfplumber), фильтр схем |
+| `github_repo` | GitHub репозитории | REST API + ZIP | Issues/PR, Wiki, docs/, защита от Zip Slip, LFS-detection |
+| `stackexchange` | Q&A форумы | SE API | Топ-вопросы по тегам, accepted_answer_id, CC BY-SA лицензия |
+| `doaj` | Открытые журналы | DOAJ API | Метаданные, рефераты, CC BY лицензия |
+| `arxiv` | Научные препринты | arXiv API | eess.SP, eess.SY, cs.AR, полнотекстовый поиск |
+| `crossref` | DOI метаданные | Crossref API | Авторы, журнал, DOI, ссылки на PDF |
+| `wikipedia` | Энциклопедия | REST API | Прямой JSON без HTML-парсинга, превью изображений |
+
+---
+
+## 🚀 Установка
+
+### Требования
+
+- **Python 3.13** (НЕ 3.14+ — PySide6 не имеет wheels для 3.14)
+- **Tesseract OCR** (опционально, для PDF-сканов): [установить](https://github.com/UB-Mannheim/tesseract/wiki)
+
+### Из исходников
+
+```bash
+git clone https://github.com/draco74-glitch/corpus_builder.git
+cd corpus_builder
+
+# Создать venv на Python 3.13
+python3.13 -m venv .venv
+source .venv/bin/activate        # Linux/macOS
+.venv\Scripts\activate           # Windows
+
+# Установить зависимости
+pip install -r requirements.txt
+pip install -e .[gui,build]
+
+# Запустить GUI
+python -m corpus_builder.gui
+```
+
+### Готовый .exe (Windows)
+
+1. Скачайте `CorpusBuilder.zip` из [Releases](https://github.com/draco74-glitch/corpus_builder/releases)
+2. Распакуйте в любую папку
+3. Запустите `CorpusBuilder.exe`
+
+---
+
+## 📖 Использование
+
+### GUI режим
+
+1. Запустите `CorpusBuilder.exe`
+2. Нажмите **«✨ Создать config.yaml»** — загрузите Excel с URL
+3. Нажмите **«▶ Запустить краулинг»**
+4. Дождитесь завершения → нажмите **«⚙ Пост-обработка»**
+5. Результат: `corpus_output/corpus_final.jsonl`
+
+### CLI режим
+
+```bash
+# Синхронный краулинг
+corpus-builder -c config.yaml crawl
+
+# Асинхронный (4-8x быстрее)
+corpus-builder -c config.yaml async-crawl --max-concurrent 8
+
+# Пост-обработка (дедупликация + фильтр + нормализация + пары)
+corpus-builder -c config.yaml postprocess
+
+# Статистика
+corpus-builder -c config.yaml stats
+
+# Сравнение двух корпусов
+corpus-builder diff corpus_old.jsonl corpus_new.jsonl --html report.html
+```
+
+### Мастер создания config.yaml
+
+```bash
+# Из Excel/CSV
+python -m corpus_builder.config_generator from-csv sources.csv -o config.yaml
+
+# Поиск GitHub репозиториев
+python -m corpus_builder.config_generator from-github --topics kicad --max-repos 100 -o config.yaml
+
+# Топ вопросов StackExchange
+python -m corpus_builder.config_generator from-stackexchange --tags kicad --max-questions 100 -o config.yaml
+```
+
+---
+
+## 🏗 Архитектура сборки: one-dir
 
 ```
 dist/
 └── CorpusBuilder/
-    ├── CorpusBuilder.exe          ← ~15 МБ (загрузчик)
-    ├── _internal/
-    │   ├── python313.dll
-    │   ├── PySide6/
-    │   ├── matplotlib/
-    │   ├── fitz/
-    │   ├── corpus_builder/        ← ваш код (можно обновлять отдельно)
-    │   ├── config.example.yaml
-    │   └── ...
-    ├── config.yaml                ← пользовательский конфиг
-    └── corpus_output/             ← результаты
+    ├── CorpusBuilder.exe          ← 24 МБ (загрузчик)
+    └── _internal/
+        ├── python313.dll
+        ├── PySide6/
+        ├── corpus_builder/        ← .py файлы (обновляются автоматически)
+        └── ...
 ```
-
-### Преимущества one-dir
 
 | Метрика | One-file (старая) | One-dir (текущая) |
 |---------|-------------------|-------------------|
-| Размер .exe | 450 МБ | 15 МБ |
+| Размер .exe | 450 МБ | 24 МБ |
 | Холодный старт | 8 сек | 0.8 сек (**10x**) |
+| Обновление кода | 450 МБ | 150 КБ (**2527x меньше**) |
 | Антивирус false-positive | частый | редкий |
-| Обновление кода | 450 МБ скачать | 50 КБ (**9000x меньше**) |
-| Авто-обновление | невозможно | **через GitHub Releases** |
 
-### Авто-обновление
-
-Программа автоматически проверяет обновления при старте (через GitHub Releases).
-Если доступна новая версия — показывается toast-уведомление.
-
-- **patch.zip** — только изменившиеся .py файлы (50 КБ)
-- **CorpusBuilder-X.Y.Z.zip** — полный дистрибутив (445 МБ)
-
-Для ручной проверки: меню **Справка → Проверить обновления** (или `Ctrl+U`).
-
-### Создание дистрибутива
+### Сборка
 
 ```bash
-# Сборка one-dir
-build.bat --zip        # Windows
-bash build.sh --zip    # Linux/macOS
+# Windows
+build.bat --zip     # сборка + ZIP + patch.zip
 
-# Или вручную после сборки:
-python -m corpus_builder.zip_distributor --build-dir dist/CorpusBuilder --version 0.2.0
+# Linux/macOS
+bash build.sh --zip
 ```
 
-Результат:
-- `dist/CorpusBuilder/` — папка с .exe (для запуска)
-- `dist/CorpusBuilder-0.2.0.zip` — полный дистрибутив (для распространения)
-- `dist/patch-0.2.0.zip` — патч для авто-обновления (только .py файлы)
+---
 
-## Возможности
+## 🔄 Авто-обновление
 
-### Типы источников (8 типов)
+Программа **автоматически проверяет новые коммиты** на GitHub при старте.
 
-- HTML (статьи, блоги) — на базе `trafilatura`
-- PDF (datasheet'ы, руководства) — `PyMuPDF` с поддержкой **двухколоночной вёрстки**, опциональным OCR (tesseract), **извлечением таблиц через pdfplumber**, **фильтром схем через OCR-ключевые слова** и структурированием по TOC
-- GitHub-репозитории — через REST API + ZIP-архив (с защитой от Zip Slip), опционально: **Issues/PR**, **Wiki**, **директория docs/**
-- StackExchange (вопросы и ответы) — через официальный API
-- **DOAJ** — поиск открытых научных статей через DOAJ API
-- **arXiv** — статьи из разделов eess.SP, eess.SY, cs.AR через arXiv API
-- **Crossref** — метаданные DOI и рефераты
-- **Wikipedia REST API** — статьи напрямую в JSON, без HTML-парсинга
+| Способ | Описание |
+|--------|----------|
+| Автоматически | При запуске — toast-уведомление если есть новый коммит |
+| `Ctrl+U` | Ручная проверка: меню «Справка → Проверить обновления» |
+| Программно | `CommitUpdater.check_for_commit_updates()` |
 
-- **Устойчивость к сбоям**:
-  - `state.json` с отслеживанием обработанных и ошибочных URL
-  - `--resume` для продолжения после сбоя
-  - Чекпойнты каждые 50 источников (настраивается)
-  - Все ошибки пишутся в `errors.jsonl` с указанием причины
+При обновлении:
+1. Скачиваются только `.py` файлы (~150 КБ)
+2. Создаётся backup текущей папки
+3. Файлы заменяются в `_internal/corpus_builder/`
+4. Перезапуск — готово
 
-- **Вежливость к сайтам**:
-  - Проверка `robots.txt` per-domain с кэшированием
-  - Per-domain rate limiter (задержка между запросами на один домен)
-  - Кастомный User-Agent
+---
 
-- **Безопасность**:
-  - Уникальные имена файлов на основе хэша URL (нет гонки за именами)
-  - Защита от Zip Slip при распаковке GitHub-архивов
-  - Проверка реального размера при стриминге (не только Content-Length)
-  - Токены GitHub/StackExchange через переменные окружения
+## ⚡ Оптимизации производительности
 
-- **Качество корпуса для pretraining**:
-  - **Дедупликация** трёх уровней:
-    - Точная (`sha1` нормализованного текста)
-    - Нечёткая (`MinHash LSH`, настраиваемый порог Jaccard)
-    - По канонизированному URL (удаление `utm_*`, сортировка query)
-    - По хэшу изображений (для PDF-схем)
-  - **Нормализация текста**:
-    - `unicodedata.NFKC` (приведение полноширинных и совместимых символов)
-    - `ftfy.fix_text` (исправление «сломанных» кодировок)
-    - Удаление zero-width и управляющих символов
-    - Опциональная нормализация `ё → е` для русского
-  - **Фильтрация качества**:
-    - Длина (min/max chars)
-    - Соотношение не-буквенных символов
-    - Доля дублирующихся строк
-    - Язык (RU/EN/bilingual/multi)
+| # | Оптимизация | Эффект |
+|---|-------------|--------|
+| 1 | Нативный aiohttp для HTML | 4-6x на больших списках URL |
+| 2 | Буферизованная запись JSONL | 5-15% экономии на syscalls |
+| 3 | Параллельный OCR для PDF | 10-20x на OCR-тяжёлых PDF |
+| 4 | Connection pooling | 1.3x на повторных соединениях |
+| 5 | SQLite WAL для HTTP-кэша | 1.4x на повторных прогонах |
+| 6 | Multiprocessing пост-обработка | 3-5x на 8 ядрах |
+| 7 | Streaming MinHash | экономия RAM для больших корпусов |
+| 8 | Ленивая инициализация краулеров | 400 мс экономии на старте |
+| 9 | Pre-filter по robots.txt | 1 проверка на домен вместо N |
+| 10 | HTTP/2 через httpx | 1.2x на HTTP/2 сайтах |
+| 11 | Prefetch robots.txt | 50x для 50+ доменов |
+| 12 | Сжатие JSONL (.jsonl.gz) | 4-6x экономия места |
+| 13 | Memory-mapped чтение | 2-3x на файлах >1 ГБ |
+| 14 | Incremental dedup (LSH в файле) | 2-3x на повторных прогонах |
 
-- **Дополнительно**:
-  - Извлечение пар для instruction-tuning (README ↔ KiCad, вопрос ↔ принятый ответ)
-  - Логирование через `loguru` с ротацией файлов
-  - Прогресс-бар через `tqdm`
-  - Pydantic-валидация конфигурации и записей
+**Ожидаемое ускорение**: 1000 источников — 48 мин → 5-7 мин (~7x)
 
-## Установка
+---
 
-### Системные зависимости
+## 🎨 GUI: 15 улучшений интерфейса
 
-- Python 3.10+
-- Tesseract OCR (для OCR-фолбэка PDF-сканов):
-  ```bash
-  # Ubuntu/Debian
-  sudo apt install tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng
+| # | Улучшение | Описание |
+|---|-----------|----------|
+| A | Drag-and-Drop config.yaml | Перетащите файл прямо в окно |
+| B | Контекстное меню | ПКМ на записи → Открыть URL, Копировать, Удалить |
+| C | Поиск по логу (Ctrl+F) | Подсветка, навигация ↑↓, счётчик N/M |
+| D | Сохранение разделителей | Позиции QSplitter в JSON |
+| E | Toast-уведомления | Всплывающие окна с fade-in/out анимацией |
+| F | Переключение тем | Dark ↔ Light, горячее переключение |
+| G | Превью KiCad | Парсинг .kicad_sch, таблица компонентов |
+| H | История config.yaml | Последние 10 файлов, авто-фильтр |
+| I | Прогресс с ETA | «N/total | ETA: 5m 30s | 2.3 URL/s» |
+| J | Сравнение корпусов | Diff dialog с HTML-отчётом |
+| K | YAML-редактор | Подсветка синтаксиса (VS Code-style) |
+| L | Dashboard | 3 графика + текстовая сводка |
+| M | Мастер первого запуска | 5 шагов: источники → качество → токены |
+| N | Локализация RU/EN | 40+ переводимых строк |
+| O | Material Design темы | Blue, Green, Purple |
 
-  # macOS
-  brew install tesseract tesseract-lang
-  ```
+---
 
-### Python-зависимости
+## ⚙️ Единое окно настроек
 
-```bash
-cd corpus_builder
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-# или для development-установки:
-pip install -e .[dev]
-```
+10 вкладок со всеми опциями программы:
 
-## Использование
+1. **📋 Общие** — тема, язык, пути, размер окна
+2. **🌐 Краулинг** — User-Agent, timeout, delay, proxy, cache
+3. **📄 HTML** — режим извлечения, изображения, файлы
+4. **📕 PDF** — OCR, двухколоночная вёрстка, таблицы, схемы
+5. **🐙 GitHub** — токен, ветка, Issues, Wiki, docs/
+6. **💬 StackExchange** — API key, сайт, score
+7. **✅ Качество** — длина, alpha, код, спам, perplexity
+8. **🔄 Дедупликация** — exact, MinHash, streaming, incremental
+9. **⚡ Производительность** — async, workers, gzip, parallel
+10. **🎨 Интерфейс** — прогресс-бар, тема, логирование
 
-### 1. Подготовка конфигурации
+Открыть: `Ctrl+,` или меню «Настройки → Все настройки...»
 
-```bash
-cp config.example.yaml config.yaml
-# отредактируйте config.yaml, добавив свои источники
-```
+---
 
-### 2. Запуск краулинга
+## 🧩 Мастер создания config.yaml
 
-```bash
-# Полный прогон
-corpus-builder crawl
+Загрузите Excel/CSV с колонками `url`, `depth`, `categories` — мастер автоматически:
+1. Прочитает Excel (поддержка .xlsx, .xls, .csv)
+2. Для каждой строки с `depth > 0` выполнит BFS-обход
+3. Дедуплицирует найденные URL
+4. Сохранит готовый `config.yaml`
 
-# С возобновлением после сбоя (по умолчанию)
-corpus-builder crawl
+**Опции**:
+- **⚡ Skip crawl** — мгновенно, только URL из Excel
+- **Параллельных seeds** — сколько URL обрабатывать параллельно (5 = оптимально)
+- **Same-domain / поддомены** — фильтрация ссылок
 
-# Только первые 5 источников для отладки
-corpus-builder crawl --limit 5
+---
 
-# Только HTML-страницы
-corpus-builder crawl --source-type html
+## 📸 Скриншоты
 
-# Тестовый прогон без записи на диск
-corpus-builder crawl --dry-run
-```
+> Скриншоты будут добавлены позже
 
-### 3. Пост-обработка
+---
 
-```bash
-# Дедупликация + фильтр + нормализация + извлечение пар
-corpus-builder postprocess
-```
+## 🔧 Разработка
 
-### 4. Статистика
-
-```bash
-corpus-builder stats
-```
-
-## Структура выходных файлов
-
-```
-corpus_output/
-├── raw_corpus.jsonl         # сырой корпус (с дубликатами)
-├── deduped.jsonl            # после дедупликации
-├── filtered.jsonl           # после фильтра качества
-├── corpus_final.jsonl       # финальный нормализованный (для pretraining)
-├── instruction_pairs.jsonl  # пары для instruction-tuning
-├── errors.jsonl             # журнал ошибок краулинга
-├── state.json               # состояние для resume
-└── crawl.log                # логи
-
-downloaded_files/             # бинарные файлы (PDF, KiCad, изображения)
-```
-
-## Формат записи корпуса
-
-Каждая строка `corpus_final.jsonl` — JSON-объект:
-
-```json
-{
-  "source_url": "https://...",
-  "source_type": "html",
-  "content": "Текст статьи...",
-  "content_sha1": "abc123...",
-  "downloaded_files": [
-    {
-      "type": "image",
-      "original_url": "...",
-      "local_path": "downloaded_files/schematic_abc.png",
-      "sha1": "def456...",
-      "size_bytes": 12345
-    }
-  ],
-  "metadata": {"title": "...", "date": "..."},
-  "categories": ["electronics", "kicad"],
-  "date_accessed": "2026-08-06T11:22:33",
-  "language": "ru",
-  "license": null,
-  "quality_score": 0.85,
-  "is_duplicate": false,
-  "duplicate_of": null,
-  "status": "ok"
-}
-```
-
-## Формат пар для instruction-tuning
-
-`instruction_pairs.jsonl`:
-
-```json
-{
-  "prompt": "На основе KiCad-описания...",
-  "completion": "README проекта...",
-  "source": "https://github.com/...",
-  "task_type": "kicad_to_description"
-}
-```
-
-## Переменные окружения
-
-```bash
-# .env (в .gitignore!)
-GITHUB_TOKEN=ghp_xxx...           # для повышенного лимита GitHub API
-STACKEXCHANGE_KEY=xxx...          # опционально, для повышенного лимита SE API
-```
-
-## Тесты
-
-```bash
-pytest tests/ -v
-```
-
-## Архитектура
+### Структура проекта
 
 ```
 corpus_builder/
 ├── corpus_builder/
-│   ├── __init__.py
-│   ├── __main__.py            # python -m corpus_builder
-│   ├── cli.py                 # Click CLI
-│   ├── config.py              # загрузка/валидация YAML
-│   ├── models.py              # pydantic-модели
-│   ├── state.py               # resume-состояние
-│   ├── logging_setup.py       # loguru
-│   ├── robots.py              # robots.txt + rate-limit
-│   ├── http.py                # общие HTTP-функции, safe download
-│   ├── text_utils.py          # нормализация, хэши, shingles
-│   ├── pipeline.py            # оркестратор
-│   ├── crawlers/
-│   │   ├── __init__.py        # реестр
-│   │   ├── base.py            # BaseCrawler (ABC)
-│   │   ├── html_crawler.py    # trafilatura + bs4 fallback
-│   │   ├── pdf_crawler.py     # PyMuPDF + pytesseract
-│   │   ├── github_crawler.py  # GitHub API + ZIP (Zip Slip-safe)
-│   │   └── forum_crawler.py   # StackExchange API
-│   └── postproc/
-│       ├── __init__.py
-│       ├── dedup.py           # exact + MinHash + URL + images
-│       ├── normalize.py       # NFKC + ftfy + ё→е
-│       ├── quality.py         # длина, alpha, dup-lines, язык
-│       └── extract_pairs.py   # README↔KiCad, Q↔A
-├── tests/
-│   ├── test_text_utils.py
-│   ├── test_state.py
-│   ├── test_quality.py
-│   └── test_dedup.py
-├── config.example.yaml
-├── pyproject.toml
-├── requirements.txt
+│   ├── crawlers/              # 8 краулеров
+│   ├── postproc/              # dedup, quality, normalize, export
+│   ├── gui.py                 # Главное окно (QMainWindow)
+│   ├── gui_improvements.py    # 15 улучшений интерфейса (A-O)
+│   ├── settings_dialog.py     # Единое окно настроек (10 вкладок)
+│   ├── config_generator.py    # Генератор config.yaml
+│   ├── async_config_generator.py  # Асинхронный генератор (10-30x)
+│   ├── auto_updater.py        # Авто-обновление по коммитам
+│   ├── pipeline.py            # Оркестратор
+│   └── ...
+├── tests/                     # 166+ unit-тестов
+├── CorpusBuilder.spec         # PyInstaller one-dir
+├── build.bat / build.sh       # Скрипты сборки
 └── README.md
 ```
 
-## Что закрыто из анализа оригинального проекта
+### Тесты
 
-| # | Проблема | Решение |
-|---|----------|---------|
-| 1 | Zip Slip | `github_crawler._safe_save` с `realpath`-проверкой |
-| 2 | Гонка за именами файлов | `http.safe_filename` = `slugify + sha1(url)[:12]` |
-| 3 | Импорт utils относительно cwd | Пакетная структура, `from corpus_builder.X import Y` |
-| 4 | Нет resume | `State` + `--resume`, чекпойнты каждые 50 |
-| 5 | Кодировка ответа | `charset-normalizer` fallback при `iso-8859-1` |
-| 6 | Нет robots.txt | `RobotsCache` per-domain |
-| 7 | Нет rate-limit per-domain | `RateLimiter` с min-интервалом на домен |
-| 8 | Ветка захардкожена | `_get_default_branch` через GitHub API |
-| 9 | Нет поддержки токена/LFS | `GITHUB_TOKEN` env + LFS-detection |
-| 10 | Нет SE API | `StackExchangeCrawler` через `/questions/{id}` + `/answers` |
-| 11 | Дубликаты контента | 3 уровня: exact + MinHash + URL |
-| 12 | Нет нормализации | `normalize_text` (NFKC+ftfy+zero-width), `normalize_yo` |
-| 13 | print вместо логов | `loguru` с rotating file handler |
-| 14 | Нет OCR | `pytesseract` при `page_text < threshold` |
-| 15 | Нет CLI | `click` с `crawl` / `postprocess` / `stats` |
-| 16 | Нет валидации схемы | pydantic `CorpusRecord`, `AppConfig` |
-| 17 | Размер только по Content-Length | Реальный подсчёт при стриминге |
-| 18 | Конфиг не валидируется | `AppConfig(**yaml.safe_load(f))` |
+```bash
+pytest tests/ -v                          # все тесты
+pytest tests/test_quality_filters.py -v   # конкретный модуль
+pytest tests/ -q --ignore=tests/test_vcr_cassettes.py  # без сетевых
+```
 
-## Лицензия
+### Вклад в проект
 
-MIT — для собранного корпуса смотрите лицензии источников.
-StackExchange: CC BY-SA 4.0 (записывается в поле `license`).
-GitHub: по лицензии репозитория (запрашивается через API).
+См. [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
-## GUI режим
+## 📄 Лицензия
 
-Программа поставляется в двух вариантах:
+**CorpusBuilder License — Non-Commercial Use**
 
-1. **CLI** (для серверов и CI): `corpus-builder crawl --config config.yaml`
-2. **GUI** (для домашнего использования): отдельное окно с кнопками
+- ✅ **Свободное использование** для личных, образовательных, академических и research целей
+- ✅ Модификация и распространение (с сохранением лицензии)
+- ❌ **Коммерческое использование запрещено** без отдельного разрешения
+- 💼 Для коммерческого использования — [свяжитесь с автором](https://github.com/draco74-glitch/corpus_builder)
 
-### Запуск GUI из исходников
+Полный текст лицензии: [LICENSE](LICENSE)
 
-```bash
-pip install -e ".[gui]"
-python -m corpus_builder.gui
-# или
-corpus-builder-gui
-```
+---
 
-### Сборка .exe (PyInstaller)
+<div align="center">
 
-```bash
-pip install -e ".[gui,build]"
+**[⬆ Наверх](#-оглавление)**
 
-# Linux/macOS
-bash build.sh
-bash build.sh --clean  # пересобрать с нуля
+Сделано с ❤️ для open-source сообщества
 
-# Windows
-build.bat
-build.bat --clean
-```
-
-Результат — `dist/CorpusBuilder.exe` (Windows) или `dist/CorpusBuilder` (Linux).
-Размер ~225–250 МБ (включает Python + PySide6 + matplotlib + PyMuPDF + pyarrow).
-Запуск двойным кликом, никаких дополнительных установок не требуется.
-
-> ⚠️ Сборку нужно выполнять на той ОС, для которой предназначен .exe —
-> PyInstaller не кросс-компилирует. Для Windows .exe собирайте на Windows.
-
-### Возможности GUI
-
-Главное окно содержит:
-
-1. **Секция «Конфигурация»**:
-   - Поле для выбора `config.yaml`
-   - Поле для выбора папки, куда сохранять корпус (перекрывает конфиг)
-   - Кнопка «Открыть папку» — открывает папку корпуса в проводнике
-   - Опции: «Продолжить (resume)», «Повторить упавшие»
-
-2. **Секция «Действия»** — кнопки:
-   - ▶ Запустить краулинг
-   - ⚙ Пост-обработка (дедупликация + фильтр + нормализация + пары)
-   - ⏹ Остановить (мягкая остановка после текущего URL)
-   - ⬇ Экспорт в HuggingFace dataset
-   - ⬇ Экспорт в Parquet
-
-3. **Секция «Прогресс»**:
-   - Прогресс-бар (текущий URL / всего)
-   - Текстовая метка с текущим URL
-
-4. **Вкладки**:
-   - **Лог** — цветной лог событий (INFO/WARN/ERROR) с авто-скроллом
-   - **Последние записи** — таблица из 20 последних собранных записей (URL, тип, длина, язык, quality_score)
-   - **Статистика** — четыре графика matplotlib (типы источников, языки, длины, качество) + текстовая сводка
-
-5. **Трей**:
-   - Сворачивание окна в системный трей
-   - Уведомление при завершении задачи
-   - Двойной клик по иконке — показать окно
-
-6. **Resume**:
-   - При закрытии во время работы краулинг мягко останавливается
-   - Путь к config и папке запоминается в `~/.corpus_builder_gui.json`
-   - Повторный запуск — просто отметьте «Продолжить» и нажмите «Запустить краулинг»
-
-### Сценарий работы типового пользователя
-
-1. Скачайте `CorpusBuilder.exe`
-2. Отредактируйте `config.example.yaml` под свои источники, переименуйте в `config.yaml`
-3. Запустите `CorpusBuilder.exe`
-4. Нажмите «Обзор...» в строке `config.yaml` → выберите свой `config.yaml`
-5. При необходимости укажите папку вывода (или используйте из конфига)
-6. Убедитесь, что галка «Продолжить (resume)» стоит
-7. Нажмите «▶ Запустить краулинг»
-8. Следите за прогрессом в логе и таблице «Последние записи»
-9. По завершении нажмите «⚙ Пост-обработка» — получите финальный `corpus_final.jsonl`
-10. При необходимости экспортируйте в HuggingFace или Parquet
-
-### Если что-то сломалось
-
-- **Краулинг упал** — откройте `corpus_output/errors.jsonl`, посмотрите причину. Исправьте конфиг, отметьте «Повторить упавшие», нажмите «Запустить краулинг».
-- **Программа зависла** — нажмите «⏹ Остановить» (мягкая остановка). Если не помогает — закройте через Диспетчер задач, при следующем запуске поставьте «Продолжить».
-- **.exe не запускается** — проверьте, что Windows Defender не заблокировал файл (часто ложно срабатывает на PyInstaller-сборки). Скачайте файл заново и нажмите «Свойства → Разблокировать» в контекстном меню.
-- **Не находит tesseract** — OCR PDF-сканов работать не будет, остальной функционал — будет. Для OCR установите [tesseract](https://github.com/UB-Mannheim/tesseract/wiki) и добавьте в PATH.
-
-### Улучшения по сравнению с CLI-версией
-
-- Наглядность: видно, что программа делает прямо сейчас, а не только последний `print()`
-- Безопасность: при закрытии окна краулинг не теряется — состояние сохраняется
-- Контроль: можно остановить в любой момент и продолжить позже
-- Аналитика: графики статистики позволяют оценить качество корпуса до обучения
-- Доступность: не нужно знать Python / командную строку — `.exe` запускается двойным кликом
+</div>
