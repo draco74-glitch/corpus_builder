@@ -83,6 +83,7 @@ a = Analysis(
         "corpus_builder.auto_discover",
         "corpus_builder.auto_discover_dialog",
         "corpus_builder.zip_distributor",
+        "corpus_builder.merge_config_dialog",
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",

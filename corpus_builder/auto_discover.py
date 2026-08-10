@@ -64,10 +64,23 @@ class AutoDiscover:
         se_site: str = "electronics",
         wiki_categories: list[str] | None = None,
         wiki_lang: str = "en",
+        wiki_langs: list[str] | None = None,
         seed_urls: list[str] | None = None,
         max_per_source: int = 50,
         on_progress: ProgressCallback | None = None,
     ) -> list[dict]:
+        """Запустить авто-поиск источников.
+
+        Параметры:
+            topics: GitHub topics
+            se_tags: StackExchange теги
+            se_site: StackExchange сайт
+            wiki_categories: Wikipedia категории
+            wiki_lang: язык Wikipedia (один, если wiki_langs не задан)
+            wiki_langs: список языков Wikipedia (мультиязычный поиск)
+            seed_urls: стартовые URL
+            max_per_source: максимум источников с одной платформы
+        """
         """Запустить авто-поиск источников.
 
         Параметры:
@@ -114,9 +127,12 @@ class AutoDiscover:
         # 3. Wikipedia categories
         if wiki_categories:
             current_step += 1
+            # Поддержка мультиязычного поиска
+            langs = wiki_langs if wiki_langs else [wiki_lang]
             if on_progress:
-                on_progress(current_step, total_steps, f"Wikipedia: поиск по categories={wiki_categories}")
-            self._search_wikipedia(wiki_categories, wiki_lang, max_per_source)
+                on_progress(current_step, total_steps,
+                    f"Wikipedia: поиск по категориям {wiki_categories} (языки: {langs})")
+            self._search_wikipedia_multi(wiki_categories, langs, max_per_source)
 
         # 4. Seed URLs
         if seed_urls:
@@ -172,7 +188,7 @@ class AutoDiscover:
             self._stats["stackexchange"] = 0
 
     def _search_wikipedia(self, categories: list[str], lang: str, max_articles: int) -> None:
-        """Поиск статей на Wikipedia."""
+        """Поиск статей на Wikipedia (один язык)."""
         try:
             sources = from_wikipedia(
                 categories=categories,
@@ -186,6 +202,31 @@ class AutoDiscover:
             log.info(f"Wikipedia: found {len(sources)} articles")
         except Exception as e:
             log.warning(f"Wikipedia search failed: {e}")
+            self._stats["wikipedia"] = 0
+
+    def _search_wikipedia_multi(self, categories: list[str], languages: list[str],
+                                 max_articles: int) -> None:
+        """Мультиязычный поиск статей на Wikipedia.
+
+        Ищет одни и те же категории на нескольких языках,
+        дедуплицирует URL между языками.
+        """
+        try:
+            from .config_generator import from_wikipedia_multi
+            sources = from_wikipedia_multi(
+                categories=categories,
+                languages=languages,
+                max_articles=max_articles,
+                depth=1,
+            )
+            for s in sources:
+                self._add_source(s["url"], s.get("categories"))
+            self._stats["wikipedia"] = len(sources)
+            self._stats["wikipedia_langs"] = languages
+            log.info(f"Wikipedia multi-lang: found {len(sources)} articles "
+                     f"across {len(languages)} languages")
+        except Exception as e:
+            log.warning(f"Wikipedia multi-lang search failed: {e}")
             self._stats["wikipedia"] = 0
 
     def save_config(self, sources: list[dict], output_path: str | Path) -> str:
@@ -250,5 +291,12 @@ class AutoDiscover:
                 "se_site": "electronics",
                 "wiki_categories": ["Электроника", "Печатные платы", "Радиоэлектроника"],
                 "wiki_lang": "ru",
+            },
+            "multilingual_electronics": {
+                "github_topics": ["kicad", "pcb", "electronics"],
+                "se_tags": ["kicad", "pcb"],
+                "se_site": "electronics",
+                "wiki_categories": ["Electronics", "Printed circuit boards", "Microcontrollers"],
+                "wiki_langs": ["en", "ru", "de", "fr"],
             },
         }

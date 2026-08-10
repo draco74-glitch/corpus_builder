@@ -828,21 +828,141 @@ def build_config(sources: list[dict], output_path: str | Path,
 
 
 def merge_sources(config_files: list[str]) -> list[dict]:
-    """Объединить sources из нескольких config.yaml с дедупликацией по URL.
+    """Умное объединение sources из нескольких config.yaml с дедупликацией.
 
-    Если URL повторяется — берётся запись из первого файла (в порядке аргументов).
+    Дедупликация по:
+      1. Прямой URL — точное совпадение
+      2. Канонизированный URL — удаление utm_*, сортировка query, приведение scheme
+         (https://example.com/page?id=1&utm_source=email == https://example.com/page?id=1)
+      3. URL без trailing slash — example.com/page == example.com/page/
+
+    Если URL повторяется:
+      - Берётся запись из первого файла (в порядке аргументов)
+      - Категории из дубликатов сливаются в первую запись
     """
+    from .text_utils import canonical_url
+
     sources: list[dict] = []
-    seen: dict[str, dict] = {}
+    seen_exact: dict[str, dict] = {}       # URL -> source
+    seen_canonical: dict[str, dict] = {}    # canonical URL -> source
+    duplicates_found = 0
+
     for f in config_files:
         with open(f, "r", encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh) or {}
         for s in cfg.get("sources") or []:
-            if s.get("url") and s["url"] not in seen:
-                seen[s["url"]] = s
-                sources.append(s)
-    print(f"Merged {len(sources)} unique sources from {len(config_files)} files")
+            url = s.get("url", "")
+            if not url:
+                continue
+
+            # Проверка 1: точное совпадение URL
+            if url in seen_exact:
+                duplicates_found += 1
+                # Сливаем категории из дубликата
+                existing = seen_exact[url]
+                existing_cats = set(existing.get("categories") or [])
+                new_cats = set(s.get("categories") or [])
+                merged_cats = list(existing_cats | new_cats)
+                if merged_cats:
+                    existing["categories"] = merged_cats
+                continue
+
+            # Проверка 2: канонизированный URL
+            canon = canonical_url(url)
+            # Нормализация: убираем trailing slash для сравнения
+            canon_key = canon.rstrip("/").lower()
+            if canon_key in seen_canonical:
+                duplicates_found += 1
+                existing = seen_canonical[canon_key]
+                # Сливаем категории
+                existing_cats = set(existing.get("categories") or [])
+                new_cats = set(s.get("categories") or [])
+                merged_cats = list(existing_cats | new_cats)
+                if merged_cats:
+                    existing["categories"] = merged_cats
+                continue
+
+            # Уникальный URL — добавляем
+            seen_exact[url] = s
+            seen_canonical[canon_key] = s
+            sources.append(s)
+
+    print(f"Merged {len(sources)} unique sources from {len(config_files)} files "
+          f"({duplicates_found} duplicates removed)")
     return sources
+
+
+def merge_sources_with_stats(config_files: list[str]) -> tuple[list[dict], dict]:
+    """Умное объединение с подробной статистикой.
+
+    Возвращает (sources, stats):
+      sources: list[dict] уникальных источников
+      stats: {
+        total_input: int,
+        total_output: int,
+        duplicates_removed: int,
+        by_file: {filename: count},
+      }
+    """
+    from .text_utils import canonical_url
+
+    sources: list[dict] = []
+    seen_exact: dict[str, dict] = {}
+    seen_canonical: dict[str, dict] = {}
+    total_input = 0
+    duplicates_found = 0
+    by_file: dict[str, int] = {}
+
+    for f in config_files:
+        file_count = 0
+        with open(f, "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        for s in cfg.get("sources") or []:
+            total_input += 1
+            file_count += 1
+            url = s.get("url", "")
+            if not url:
+                continue
+
+            is_dup = False
+            # Проверка 1: точное совпадение
+            if url in seen_exact:
+                is_dup = True
+                existing = seen_exact[url]
+            else:
+                # Проверка 2: канонизированный URL
+                canon = canonical_url(url)
+                canon_key = canon.rstrip("/").lower()
+                if canon_key in seen_canonical:
+                    is_dup = True
+                    existing = seen_canonical[canon_key]
+
+            if is_dup:
+                duplicates_found += 1
+                # Сливаем категории
+                existing_cats = set(existing.get("categories") or [])
+                new_cats = set(s.get("categories") or [])
+                merged_cats = list(existing_cats | new_cats)
+                if merged_cats:
+                    existing["categories"] = merged_cats
+                continue
+
+            seen_exact[url] = s
+            canon = canonical_url(url)
+            canon_key = canon.rstrip("/").lower()
+            seen_canonical[canon_key] = s
+            sources.append(s)
+
+        by_file[Path(f).name] = file_count
+
+    stats = {
+        "total_input": total_input,
+        "total_output": len(sources),
+        "duplicates_removed": duplicates_found,
+        "by_file": by_file,
+    }
+    print(f"Merge stats: {stats}")
+    return sources, stats
 
 
 def merge_sources_into_config(config_files: list[str], output_path: str | Path) -> None:
@@ -974,6 +1094,55 @@ def _get_wikipedia_subcategories(category: str, lang: str, api_url: str) -> list
         return [m.get("title", "").replace("Category:", "") for m in members if m.get("title")]
     except Exception:
         return []
+
+
+# ============================================================
+# Мультиязычный поиск Wikipedia — несколько языков сразу
+# ============================================================
+
+def from_wikipedia_multi(
+    categories: list[str],
+    languages: list[str] = None,
+    max_articles: int = 50,
+    depth: int = 0,
+) -> list[dict]:
+    """Поиск статей Wikipedia на нескольких языках одновременно.
+
+    Параметры:
+        categories: список категорий (одни и те же для всех языков)
+        languages: список языковых кодов (например, ["en", "ru"])
+        max_articles: максимум статей на категорию на каждый язык
+        depth: глубина обхода подкатегорий
+
+    Возвращает list[dict] с дедупликацией URL (разные языки = разные URL).
+    """
+    if languages is None:
+        languages = ["en"]
+
+    all_sources: list[dict] = []
+    seen_urls: set[str] = set()
+    stats: dict[str, int] = {}
+
+    for lang in languages:
+        print(f"Wikipedia: searching lang={lang}, categories={categories}")
+        sources = from_wikipedia(
+            categories=categories,
+            lang=lang,
+            max_articles=max_articles,
+            depth=depth,
+        )
+        count = 0
+        for s in sources:
+            if s["url"] not in seen_urls:
+                seen_urls.add(s["url"])
+                all_sources.append(s)
+                count += 1
+        stats[lang] = count
+        print(f"  Wikipedia ({lang}): {count} unique articles")
+
+    print(f"Wikipedia multi-lang: {len(all_sources)} total articles across {len(languages)} languages")
+    print(f"  By language: {stats}")
+    return all_sources
 
 
 # ============================================================

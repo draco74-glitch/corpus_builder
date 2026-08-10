@@ -34,6 +34,7 @@ from .app_settings import AppSettings
 from .settings_dialog import SettingsDialog
 from .auto_updater import AutoUpdater, CommitUpdater
 from .auto_discover import AutoDiscover
+from .merge_config_dialog import MergeConfigDialog
 from .gui_improvements import (
     ConfigDropArea, RecordsTableContextMenu, LogSearchBar,
     SplitterStateSaver, ToastNotification, apply_theme, get_theme_qss, THEMES,
@@ -348,6 +349,11 @@ class MainWindow(QMainWindow):
         act_auto_discover.setShortcut(QKeySequence("Ctrl+Shift+A"))
         act_auto_discover.triggered.connect(self._on_auto_discover)
         actions_menu.addAction(act_auto_discover)
+
+        act_merge_config = QAction("🔗  Объединить config.yaml...", self)
+        act_merge_config.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        act_merge_config.triggered.connect(self._on_merge_config)
+        actions_menu.addAction(act_merge_config)
 
         # === Меню Справка ===
         help_menu = menubar.addMenu("Справка")
@@ -696,6 +702,11 @@ class MainWindow(QMainWindow):
         # --- Действия ---
         actions_group = QGroupBox("2. Действия")
         actions_layout = QHBoxLayout(actions_group)
+        self.btn_merge_config = QPushButton("🔗  Объединить config")
+        self.btn_merge_config.setToolTip("Объединить несколько config.yaml в один с удалением дубликатов")
+        self.btn_merge_config.clicked.connect(self._on_merge_config)
+        actions_layout.addWidget(self.btn_merge_config)
+
         self.btn_auto_discover = QPushButton("🔄  Авто-поиск источников")
         self.btn_auto_discover.setToolTip(
             "Автоматический поиск источников на GitHub, StackExchange и Wikipedia\n"
@@ -941,6 +952,18 @@ class MainWindow(QMainWindow):
         ensure_output_dirs(cfg)
         self._save_session()
         return cfg
+
+    def _on_merge_config(self) -> None:
+        """Открыть диалог объединения config.yaml."""
+        try:
+            dialog = MergeConfigDialog(self)
+            if dialog.exec() == QDialog.Accepted:
+                self._log("INFO", "Конфиги объединены")
+        except Exception as e:
+            import traceback
+            self._log("ERROR", f"Ошибка объединения: {e}")
+            QMessageBox.critical(self, "Ошибка",
+                f"Не удалось объединить конфиги:\n\n{e}")
 
     def _on_auto_discover(self) -> None:
         """Открыть диалог авто-поиска источников."""

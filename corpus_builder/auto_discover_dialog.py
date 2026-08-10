@@ -46,7 +46,7 @@ class AutoDiscoverWorker(QThread):
     error = Signal(str)
 
     def __init__(self, topics=None, se_tags=None, se_site="electronics",
-                 wiki_categories=None, wiki_lang="en",
+                 wiki_categories=None, wiki_lang="en", wiki_langs=None,
                  seed_urls=None, max_per_source=50):
         super().__init__()
         self.topics = topics or []
@@ -54,6 +54,7 @@ class AutoDiscoverWorker(QThread):
         self.se_site = se_site
         self.wiki_categories = wiki_categories or []
         self.wiki_lang = wiki_lang
+        self.wiki_langs = wiki_langs
         self.seed_urls = seed_urls or []
         self.max_per_source = max_per_source
 
@@ -66,6 +67,7 @@ class AutoDiscoverWorker(QThread):
                 se_site=self.se_site,
                 wiki_categories=self.wiki_categories if self.wiki_categories else None,
                 wiki_lang=self.wiki_lang,
+                wiki_langs=self.wiki_langs,
                 seed_urls=self.seed_urls if self.seed_urls else None,
                 max_per_source=self.max_per_source,
                 on_progress=self._on_progress,
@@ -159,12 +161,29 @@ class AutoDiscoverDialog(QDialog):
         wiki_row = QHBoxLayout()
         self.edit_wiki_categories = QLineEdit()
         self.edit_wiki_categories.setPlaceholderText("Electronics, Printed circuit boards, Operational amplifiers")
-        wiki_row.addWidget(self.edit_wiki_categories)
-        wiki_row.addWidget(QLabel("Язык:"))
-        self.combo_wiki_lang = QComboBox()
-        self.combo_wiki_lang.addItems(["en", "ru", "de", "fr", "es"])
-        wiki_row.addWidget(self.combo_wiki_lang)
-        manual_layout.addRow("Wikipedia categories:", wiki_row)
+        wiki_row.addWidget(self.edit_wiki_categories, stretch=1)
+        wiki_row.addWidget(QLabel("Языки:"))
+        # Мультиязычный выбор через чекбоксы
+        self.chk_wiki_en = QCheckBox("EN")
+        self.chk_wiki_en.setChecked(True)
+        wiki_row.addWidget(self.chk_wiki_en)
+        self.chk_wiki_ru = QCheckBox("RU")
+        wiki_row.addWidget(self.chk_wiki_ru)
+        self.chk_wiki_de = QCheckBox("DE")
+        wiki_row.addWidget(self.chk_wiki_de)
+        self.chk_wiki_fr = QCheckBox("FR")
+        wiki_row.addWidget(self.chk_wiki_fr)
+        manual_layout.addRow("Wikipedia:", wiki_row)
+
+        # Подсказка
+        wiki_hint = QLabel(
+            "💡 Отметьте языки для мультиязычного поиска.\n"
+            "  Категории задаются один раз — программа ищет их на всех выбранных языках.\n"
+            "  Например: 'Electronics' на EN + 'Электроника' на RU = оба результата."
+        )
+        wiki_hint.setWordWrap(True)
+        wiki_hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        manual_layout.addRow(wiki_hint)
 
         # Max per source
         self.spin_max_per_source = QSpinBox()
@@ -232,7 +251,19 @@ class AutoDiscoverDialog(QDialog):
         self.edit_se_tags.setText(", ".join(preset.get("se_tags", [])))
         self.combo_se_site.setCurrentText(preset.get("se_site", "electronics"))
         self.edit_wiki_categories.setText(", ".join(preset.get("wiki_categories", [])))
-        self.combo_wiki_lang.setCurrentText(preset.get("wiki_lang", "en"))
+        # Поддержка мультиязычных пресетов
+        wiki_langs = preset.get("wiki_langs")
+        if wiki_langs:
+            self.chk_wiki_en.setChecked("en" in wiki_langs)
+            self.chk_wiki_ru.setChecked("ru" in wiki_langs)
+            self.chk_wiki_de.setChecked("de" in wiki_langs)
+            self.chk_wiki_fr.setChecked("fr" in wiki_langs)
+        else:
+            lang = preset.get("wiki_lang", "en")
+            self.chk_wiki_en.setChecked(lang == "en")
+            self.chk_wiki_ru.setChecked(lang == "ru")
+            self.chk_wiki_de.setChecked(lang == "de")
+            self.chk_wiki_fr.setChecked(lang == "fr")
 
     def _apply_preset(self):
         """Применить выбранный пресет."""
@@ -247,6 +278,17 @@ class AutoDiscoverDialog(QDialog):
         topics_str = self.edit_github_topics.text().strip()
         se_tags_str = self.edit_se_tags.text().strip()
         wiki_cats_str = self.edit_wiki_categories.text().strip()
+        wiki_langs = []
+        if self.chk_wiki_en.isChecked():
+            wiki_langs.append("en")
+        if self.chk_wiki_ru.isChecked():
+            wiki_langs.append("ru")
+        if self.chk_wiki_de.isChecked():
+            wiki_langs.append("de")
+        if self.chk_wiki_fr.isChecked():
+            wiki_langs.append("fr")
+        if not wiki_langs:
+            wiki_langs = ["en"]  # default
 
         if not topics_str and not se_tags_str and not wiki_cats_str:
             QMessageBox.warning(self, "Нет данных",
@@ -271,7 +313,8 @@ class AutoDiscoverDialog(QDialog):
             se_tags=se_tags,
             se_site=self.combo_se_site.currentText(),
             wiki_categories=wiki_cats,
-            wiki_lang=self.combo_wiki_lang.currentText(),
+            wiki_langs=wiki_langs if len(wiki_langs) > 1 else None,
+            wiki_lang=wiki_langs[0] if len(wiki_langs) == 1 else "en",
             max_per_source=self.spin_max_per_source.value(),
         )
         self.worker.progress.connect(self._on_progress)
