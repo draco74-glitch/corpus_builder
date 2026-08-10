@@ -852,6 +852,131 @@ def merge_sources_into_config(config_files: list[str], output_path: str | Path) 
 
 
 # ============================================================
+# Стратегия 7: from_wikipedia — поиск статей по категориям
+# ============================================================
+
+def from_wikipedia(
+    categories: list[str],
+    lang: str = "en",
+    max_articles: int = 50,
+    depth: int = 0,
+) -> list[dict]:
+    """Найти статьи Wikipedia по категориям через MediaWiki API.
+
+    Использует API /api.php?action=query&list=categorymembers
+    для получения списка статей в заданных категориях.
+
+    Параметры:
+        categories: список категорий Wikipedia (например, ["Electronics", "Printed circuit boards"])
+        lang: языковой код Wikipedia (en, ru, de, fr, ...)
+        max_articles: максимум статей на категорию
+        depth: глубина обхода подкатегорий (0 = только прямые статьи)
+
+    Возвращает list[dict] готовых источников.
+    """
+    import requests as _req
+
+    sources: list[dict] = []
+    seen_urls: set[str] = set()
+
+    api_url = f"https://{lang}.wikipedia.org/w/api.php"
+
+    for category in categories:
+        # Убираем "Category:" префикс если есть
+        cat_name = category.replace("Category:", "").replace("Категория:", "").strip()
+
+        # Получаем статьи в категории
+        params = {
+            "action": "query",
+            "list": "categorymembers",
+            "cmtitle": f"Category:{cat_name}",
+            "cmlimit": min(max_articles, 500),
+            "cmtype": "page",  # только статьи, не подкатегории
+            "cmprop": "title",
+            "format": "json",
+        }
+
+        try:
+            r = _req.get(api_url, params=params, timeout=15,
+                         headers={"User-Agent": "CorpusBuilder/0.2 (wikipedia-search)"})
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            print(f"  WARN: Wikipedia search failed for '{cat_name}': {e}", file=sys.stderr)
+            continue
+
+        members = (data.get("query", {}) or {}).get("categorymembers") or []
+        if not members:
+            print(f"  Wikipedia category '{cat_name}' ({lang}): no articles found", file=sys.stderr)
+            continue
+
+        count = 0
+        for member in members:
+            title = member.get("title", "")
+            if not title or title.startswith(("Category:", "File:", "Template:", "Wikipedia:")):
+                continue
+
+            # Формируем URL статьи
+            from urllib.parse import quote
+            article_url = f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
+
+            if article_url in seen_urls:
+                continue
+            seen_urls.add(article_url)
+
+            sources.append(make_source(
+                article_url,
+                categories=[f"wikipedia:{lang}", f"category:{cat_name.lower()}"],
+            ))
+            count += 1
+            if count >= max_articles:
+                break
+
+        print(f"  Wikipedia '{cat_name}' ({lang}): found {count} articles")
+
+    # Также ищем в подкатегориях если depth > 0
+    if depth > 0:
+        for category in categories:
+            cat_name = category.replace("Category:", "").replace("Категория:", "").strip()
+            subcats = _get_wikipedia_subcategories(cat_name, lang, api_url)
+            for subcat in subcats[:10]:  # ограничиваем глубину
+                sub_sources = from_wikipedia(
+                    [subcat], lang=lang, max_articles=max_articles, depth=depth - 1
+                )
+                for s in sub_sources:
+                    if s["url"] not in seen_urls:
+                        seen_urls.add(s["url"])
+                        sources.append(s)
+
+    print(f"Wikipedia: found {len(sources)} articles across {len(categories)} categories")
+    return sources
+
+
+def _get_wikipedia_subcategories(category: str, lang: str, api_url: str) -> list[str]:
+    """Получить список подкатегорий для категории Wikipedia."""
+    import requests as _req
+    params = {
+        "action": "query",
+        "list": "categorymembers",
+        "cmtitle": f"Category:{category}",
+        "cmlimit": 50,
+        "cmtype": "subcat",
+        "cmprop": "title",
+        "format": "json",
+    }
+    try:
+        r = _req.get(api_url, params=params, timeout=15,
+                     headers={"User-Agent": "CorpusBuilder/0.2 (wikipedia-search)"})
+        r.raise_for_status()
+        data = r.json()
+        members = (data.get("query", {}) or {}).get("categorymembers") or []
+        # Возвращаем полные названия категорий
+        return [m.get("title", "").replace("Category:", "") for m in members if m.get("title")]
+    except Exception:
+        return []
+
+
+# ============================================================
 # Шаблон Excel для пользователя
 # ============================================================
 
@@ -983,6 +1108,19 @@ def main():
     p_sm.add_argument("--filter", help="Regex to filter URLs")
     p_sm.add_argument("-o", "--output", default="config.generated.yaml")
 
+    # from-wikipedia — поиск статей Wikipedia по категориям
+    p_wiki = subparsers.add_parser("from-wikipedia",
+                                    help="Find Wikipedia articles by categories")
+    p_wiki.add_argument("--categories", nargs="+", required=True,
+                         help="Wikipedia categories (e.g., Electronics 'Printed circuit boards')")
+    p_wiki.add_argument("--lang", default="en",
+                         help="Wikipedia language code (en, ru, de, fr, ...)")
+    p_wiki.add_argument("--max-articles", type=int, default=50,
+                        help="Max articles per category (default: 50)")
+    p_wiki.add_argument("--depth", type=int, default=0,
+                        help="Subcategory recursion depth (default: 0)")
+    p_wiki.add_argument("-o", "--output", default="config.generated.yaml")
+
     # merge — объединить несколько конфигов
     p_merge = subparsers.add_parser("merge",
                                     help="Merge multiple config.yaml files")
@@ -1031,6 +1169,13 @@ def main():
             args.sitemaps,
             max_urls_per_site=args.max_urls_per_site,
             url_filter=args.filter,
+        )
+    elif args.command == "from-wikipedia":
+        sources = from_wikipedia(
+            categories=args.categories,
+            lang=args.lang,
+            max_articles=args.max_articles,
+            depth=args.depth,
         )
     elif args.command == "merge":
         # Объединить sources из нескольких config.yaml с дедупликацией

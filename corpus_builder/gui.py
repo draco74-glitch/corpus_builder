@@ -33,6 +33,7 @@ from matplotlib.figure import Figure
 from .app_settings import AppSettings
 from .settings_dialog import SettingsDialog
 from .auto_updater import AutoUpdater, CommitUpdater
+from .auto_discover import AutoDiscover
 from .gui_improvements import (
     ConfigDropArea, RecordsTableContextMenu, LogSearchBar,
     SplitterStateSaver, ToastNotification, apply_theme, get_theme_qss, THEMES,
@@ -342,6 +343,11 @@ class MainWindow(QMainWindow):
         act_generate_config = QAction("✨  Создать config.yaml...", self)
         act_generate_config.triggered.connect(self._on_open_config_generator)
         actions_menu.addAction(act_generate_config)
+
+        act_auto_discover = QAction("🔄  Авто-поиск источников...", self)
+        act_auto_discover.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        act_auto_discover.triggered.connect(self._on_auto_discover)
+        actions_menu.addAction(act_auto_discover)
 
         # === Меню Справка ===
         help_menu = menubar.addMenu("Справка")
@@ -690,6 +696,14 @@ class MainWindow(QMainWindow):
         # --- Действия ---
         actions_group = QGroupBox("2. Действия")
         actions_layout = QHBoxLayout(actions_group)
+        self.btn_auto_discover = QPushButton("🔄  Авто-поиск источников")
+        self.btn_auto_discover.setToolTip(
+            "Автоматический поиск источников на GitHub, StackExchange и Wikipedia\n"
+            "по заданным темам/категориям"
+        )
+        self.btn_auto_discover.clicked.connect(self._on_auto_discover)
+        actions_layout.addWidget(self.btn_auto_discover)
+
         self.btn_generate_config = QPushButton("✨  Создать config.yaml")
         self.btn_generate_config.setProperty("secondary", True)
         self.btn_generate_config.setToolTip(
@@ -927,6 +941,31 @@ class MainWindow(QMainWindow):
         ensure_output_dirs(cfg)
         self._save_session()
         return cfg
+
+    def _on_auto_discover(self) -> None:
+        """Открыть диалог авто-поиска источников."""
+        try:
+            from .auto_discover_dialog import AutoDiscoverDialog
+            dialog = AutoDiscoverDialog(self)
+            if dialog.exec() == QDialog.Accepted:
+                # Если найдены источники — подсказать пользователю
+                if hasattr(dialog, "config_path") and dialog.config_path:
+                    reply = QMessageBox.question(
+                        self, "Источники найдены",
+                        f"Создан config.yaml с {dialog.sources_count} источниками.\n\n"
+                        f"Файл: {dialog.config_path}\n\n"
+                        f"Загрузить его в главное окно?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                    )
+                    if reply == QMessageBox.Yes:
+                        self.config_edit.setText(dialog.config_path)
+                        self._log("INFO", f"Загружен авто-config: {dialog.config_path}")
+        except Exception as e:
+            import traceback
+            self._log("ERROR", f"Ошибка авто-поиска: {e}")
+            QMessageBox.critical(self, "Ошибка",
+                f"Не удалось выполнить авто-поиск:\n\n{e}\n\n"
+                f"{traceback.format_exc()[:500]}")
 
     def _on_open_config_generator(self) -> None:
         """Открыть мастер создания config.yaml из Excel/GitHub/StackExchange."""

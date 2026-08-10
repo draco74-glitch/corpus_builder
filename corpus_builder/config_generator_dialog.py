@@ -273,6 +273,7 @@ class ConfigGeneratorDialog(QDialog):
         self.tabs.addTab(self._build_excel_tab(), "📊  Excel / CSV")
         self.tabs.addTab(self._build_github_tab(), "🐙  GitHub topics")
         self.tabs.addTab(self._build_stackexchange_tab(), "💬  StackExchange")
+        self.tabs.addTab(self._build_wikipedia_tab(), "📚  Wikipedia")
         outer.addWidget(self.tabs, stretch=1)
 
         # Общий прогресс-бар и лог
@@ -502,6 +503,51 @@ class ConfigGeneratorDialog(QDialog):
 
     # ----------------- Стилизация -----------------
 
+    def _build_wikipedia_tab(self) -> QWidget:
+        """Вкладка поиска статей Wikipedia по категориям."""
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        layout.setSpacing(8)
+
+        # Язык Wikipedia
+        self.wiki_lang_combo = QComboBox()
+        self.wiki_lang_combo.addItems(["en", "ru", "de", "fr", "es", "it", "ja", "zh"])
+        layout.addRow("Язык Wikipedia:", self.wiki_lang_combo)
+
+        # Категории
+        layout.addRow(QLabel("Категории (через запятую):"))
+        self.wiki_categories_edit = QLineEdit()
+        self.wiki_categories_edit.setPlaceholderText("Electronics, Printed circuit boards, Operational amplifiers")
+        layout.addRow(self.wiki_categories_edit)
+
+        # Max articles
+        self.wiki_max_spin = QSpinBox()
+        self.wiki_max_spin.setRange(1, 500)
+        self.wiki_max_spin.setValue(50)
+        layout.addRow("Макс. статей на категорию:", self.wiki_max_spin)
+
+        # Depth (подкатегории)
+        self.wiki_depth_spin = QSpinBox()
+        self.wiki_depth_spin.setRange(0, 3)
+        self.wiki_depth_spin.setValue(1)
+        self.wiki_depth_spin.setToolTip("0 = только прямые статьи, 1 = + подкатегории, и т.д.")
+        layout.addRow("Глубина обхода подкатегорий:", self.wiki_depth_spin)
+
+        # Подсказка
+        hint = QLabel(
+            "💡 Примеры категорий:\n"
+            "  EN: Electronics, Printed circuit boards, Operational amplifiers,\n"
+            "      Microcontrollers, Power electronics, Semiconductors\n"
+            "  RU: Электроника, Печатные платы, Радиоэлектроника\n\n"
+            "См. полный список: en.wikipedia.org/wiki/Category:Electronics"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        layout.addRow(hint)
+
+        layout.addStretch()
+        return tab
+
     def _apply_styles(self) -> None:
         self.setStyleSheet(f"""
         QDialog, QWidget {{ background-color: {DARK_BG}; color: {TEXT_PRIMARY};
@@ -688,6 +734,58 @@ class ConfigGeneratorDialog(QDialog):
             max_questions=max_q,
             min_score=min_score,
         )
+        self._connect_worker(self.worker)
+        self.worker.start()
+
+    def _start_wikipedia_generation(self) -> None:
+        """Поиск статей Wikipedia по категориям."""
+        categories_str = self.wiki_categories_edit.text().strip()
+        if not categories_str:
+            QMessageBox.warning(self, "Нет данных",
+                "Укажите хотя бы одну категорию (например: Electronics)")
+            return
+
+        categories = [c.strip() for c in categories_str.replace(";", ",").split(",") if c.strip()]
+        lang = self.wiki_lang_combo.currentText()
+        max_articles = self.wiki_max_spin.value()
+        depth = self.wiki_depth_spin.value()
+
+        self._set_running_state(True)
+        self._log("INFO", f"Wikipedia: поиск по категориям {categories} (lang={lang})")
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Поиск статей Wikipedia...")
+
+        # Используем отдельный поток для поиска
+        from .crawlers.base import BaseCrawler
+        class WikiWorker(QThread):
+            progress = Signal(int, int, str)
+            url_found = Signal(dict)
+            finished_result = Signal(list)
+            error = Signal(str)
+
+            def __init__(self, categories, lang, max_articles, depth):
+                super().__init__()
+                self.categories = categories
+                self.lang = lang
+                self.max_articles = max_articles
+                self.depth = depth
+
+            def run(self):
+                try:
+                    from .config_generator import from_wikipedia
+                    sources = from_wikipedia(
+                        categories=self.categories,
+                        lang=self.lang,
+                        max_articles=self.max_articles,
+                        depth=self.depth,
+                    )
+                    for s in sources:
+                        self.url_found.emit(s)
+                    self.finished_result.emit(sources)
+                except Exception as e:
+                    self.error.emit(f"{type(e).__name__}: {e}")
+
+        self.worker = WikiWorker(categories, lang, max_articles, depth)
         self._connect_worker(self.worker)
         self.worker.start()
 
