@@ -22,6 +22,7 @@ class CrawlSettings:
     respect_robots_txt: bool = True
     save_checkpoint_every: int = 50
     progress_bar: bool = True
+    per_url_timeout_minutes: int = 10  # таймаут на один URL
 
 
 @dataclass
@@ -185,6 +186,7 @@ class AppSettings:
         config.output.max_file_size_mb = self.crawl.max_file_size_mb
         config.pipeline.save_checkpoint_every = self.crawl.save_checkpoint_every
         config.pipeline.progress_bar = self.crawl.progress_bar
+        config.pipeline.per_url_timeout_minutes = self.crawl.per_url_timeout_minutes
 
         config.crawlers.html.extract_mode = self.html.extract_mode
         config.crawlers.html.download_images = self.html.download_images

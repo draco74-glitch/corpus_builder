@@ -517,6 +517,17 @@ class SettingsDialog(QDialog):
         self.spin_max_per_domain.setValue(1)
         layout.addRow("Макс. на домен (1 = вежливо):", self.spin_max_per_domain)
 
+        self.spin_url_timeout = QSpinBox()
+        self.spin_url_timeout.setRange(1, 120)
+        self.spin_url_timeout.setValue(10)
+        self.spin_url_timeout.setSuffix(" мин")
+        self.spin_url_timeout.setToolTip(
+            "Если обработка одного URL занимает больше этого времени \u2014\n"
+            "URL пропускается и помечается как ошибочный.\n"
+            "Защищает от зависания на медленных/больших ресурсах."
+        )
+        layout.addRow("Таймаут на один URL:", self.spin_url_timeout)
+
         self.chk_gzip = QCheckBox("Сжимать корпус в .jsonl.gz (экономия места 4-6x)")
         layout.addRow(self.chk_gzip)
 
@@ -649,6 +660,7 @@ class SettingsDialog(QDialog):
         self.chk_async.setChecked(s.async_crawl.enabled)
         self.spin_max_concurrent.setValue(s.async_crawl.max_concurrent_total)
         self.spin_max_per_domain.setValue(s.async_crawl.max_concurrent_per_domain)
+        self.spin_url_timeout.setValue(getattr(s.crawl, 'per_url_timeout_minutes', 10))
         self.chk_gzip.setChecked(s.export.gzip_output)
         self.chk_parallel_postproc.setChecked(s.export.parallel_postproc)
         self.spin_parallel_workers.setValue(s.export.parallel_workers)
@@ -740,6 +752,7 @@ class SettingsDialog(QDialog):
         s.async_crawl.enabled = self.chk_async.isChecked()
         s.async_crawl.max_concurrent_total = self.spin_max_concurrent.value()
         s.async_crawl.max_concurrent_per_domain = self.spin_max_per_domain.value()
+        s.crawl.per_url_timeout_minutes = self.spin_url_timeout.value()
         s.export.gzip_output = self.chk_gzip.isChecked()
         s.export.parallel_postproc = self.chk_parallel_postproc.isChecked()
         s.export.parallel_workers = self.spin_parallel_workers.value()

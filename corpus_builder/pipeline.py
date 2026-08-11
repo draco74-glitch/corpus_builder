@@ -30,6 +30,53 @@ LogCallback = Callable[[str, str], None]                 # (level, message)
 StopCallback = Callable[[], bool]                        # возвращает True, если нужно остановиться
 
 
+class _CrawlTimeoutError(Exception):
+    """Исключение при превышении таймаута на один URL."""
+    pass
+
+
+def _crawl_with_timeout(
+    crawler: BaseCrawler,
+    url: str,
+    categories: list[str],
+    timeout_seconds: int = 600,
+) -> CorpusRecord | None:
+    """Выполнить crawler.crawl() с ограничением по времени.
+
+    Если crawl не завершается за timeout_seconds — поднимает _CrawlTimeoutError.
+    Использует threading.Timer для принудительного прерывания.
+    """
+    import threading
+
+    result: list = []  # [record]
+    exception: list = []  # [exception]
+    done = threading.Event()
+
+    def _do_crawl():
+        try:
+            rec = crawler.crawl(url, categories=categories)
+            result.append(rec)
+        except Exception as e:
+            exception.append(e)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_do_crawl, daemon=True)
+    thread.start()
+
+    # Ждём завершения с таймаутом
+    if not done.wait(timeout=timeout_seconds):
+        # Таймаут — поток всё ещё работает, но мы его бросаем
+        # (daemon=True означает, что он не помешает выходу программы)
+        raise _CrawlTimeoutError(f"Timeout after {timeout_seconds}s on {url}")
+
+    # Если было исключение — поднимаем
+    if exception:
+        raise exception[0]
+
+    return result[0] if result else None
+
+
 def append_record(record: CorpusRecord, corpus_file: str | Path) -> None:
     """Атомарно добавить запись в JSONL."""
     corpus_file = Path(corpus_file)
@@ -152,9 +199,26 @@ def run_crawl(
             errors += 1
             continue
 
-        # Краулим
+        # Краулим с timeout — если зависает более N минут, пропускаем URL
+        per_url_timeout = getattr(config.pipeline, "per_url_timeout_minutes", 10)
+        record = None
         try:
-            record = crawler.crawl(url, categories=src.categories or [])
+            record = _crawl_with_timeout(
+                crawler, url, src.categories or [],
+                timeout_seconds=per_url_timeout * 60,
+            )
+        except _CrawlTimeoutError:
+            log.warning(f"URL timed out after {per_url_timeout} min, skipping: {url}")
+            if on_log:
+                on_log("WARNING", f"\u23f1 Превышен таймаут {per_url_timeout} мин, пропускаю: {url[:80]}")
+            record = CorpusRecord(
+                source_url=url,
+                source_type=src.type,
+                content="",
+                status="error",
+                metadata={"error": f"timeout after {per_url_timeout} minutes"},
+                categories=src.categories or [],
+            )
         except Exception as e:
             log.exception(f"Crawler crashed on {url}")
             record = CorpusRecord(

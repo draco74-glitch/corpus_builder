@@ -109,6 +109,7 @@ class PipelineConfig(BaseModel):
     resume: bool = True
     save_checkpoint_every: int = 50
     progress_bar: bool = True
+    per_url_timeout_minutes: int = 10  # если URL зависает — пропустить после N минут
 
 
 class AppConfig(BaseModel):
