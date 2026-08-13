@@ -1,45 +1,45 @@
 # Contributing to CorpusBuilder
 
-Спасибо за интерес к проекту CorpusBuilder! Любой вклад приветствуется.
+Thank you for your interest in the CorpusBuilder project! All contributions are welcome.
 
-## 📋 Содержание
-- [Как внести вклад](#как-внести-вклад)
-- [Сообщить об ошибке](#сообщить-об-ошибке)
-- [Предложить улучшение](#предложить-улучшение)
-- [Разработка](#разработка)
-- [Стиль кода](#стиль-кода)
-- [Тесты](#тесты)
-- [Лицензия](#лицензия)
+## 📋 Table of Contents
+- [How to Contribute](#how-to-contribute)
+- [Report a Bug](#report-a-bug)
+- [Suggest an Enhancement](#suggest-an-enhancement)
+- [Development](#development)
+- [Code Style](#code-style)
+- [Testing](#testing)
+- [License](#license)
 
-## Как внести вклад
+## How to Contribute
 
-1. **Fork** репозитория
-2. Создайте ветку для вашей фичи: `git checkout -b feature/amazing-feature`
-3. Внесите изменения и закоммитьте: `git commit -m 'Add amazing feature'`
-4. Запушьте ветку: `git push origin feature/amazing-feature`
-5. Откройте **Pull Request**
+1. **Fork** the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Make changes and commit: `git commit -m 'Add amazing feature'`
+4. Push the branch: `git push origin feature/amazing-feature`
+5. Open a **Pull Request**
 
-## Сообщить об ошибке
+## Report a Bug
 
-Откройте [Issue](https://github.com/draco74-glitch/corpus_builder/issues/new) и опишите:
+Open an [Issue](https://github.com/draco74-glitch/corpus_builder/issues/new) and describe:
 
-- **Версия Python** (3.13 или другая)
-- **ОС** (Windows 10/11, Linux, macOS)
-- **Как запускали** (CLI / GUI / собранный .exe)
-- **Полный traceback** ошибки
-- **Шаги для воспроизведения**
+- **Python version** (3.13 or other)
+- **OS** (Windows 10/11, Linux, macOS)
+- **How you ran it** (CLI / GUI / built .exe)
+- **Full traceback** of the error
+- **Steps to reproduce**
 
-## Предложить улучшение
+## Suggest an Enhancement
 
-Откройте [Issue](https://github.com/draco74-glitch/corpus_builder/issues/new) с меткой `enhancement` и опишите:
+Open an [Issue](https://github.com/draco74-glitch/corpus_builder/issues/new) with the `enhancement` label and describe:
 
-- Какую проблему решает ваше предложение
-- Как вы видите решение
-- Альтернативы, которые вы рассматривали
+- What problem your suggestion solves
+- How you envision the solution
+- Alternatives you've considered
 
-## Разработка
+## Development
 
-### Установка dev-окружения
+### Setting Up Dev Environment
 
 ```bash
 git clone https://github.com/draco74-glitch/corpus_builder.git
@@ -52,52 +52,52 @@ pip install -r requirements.txt
 pip install -e .[dev,gui,build]
 ```
 
-### Структура проекта
+### Project Structure
 
 ```
 corpus_builder/
-├── corpus_builder/           # Python-пакет
-│   ├── crawlers/             # Краулеры (HTML, PDF, GitHub, SE, academic)
-│   ├── postproc/             # Пост-обработка (dedup, quality, normalize)
-│   ├── gui.py                # Главное окно GUI
-│   ├── config_generator.py   # Генератор config.yaml
-│   ├── pipeline.py           # Оркестратор
+├── corpus_builder/           # Python package
+│   ├── crawlers/             # Crawlers (HTML, PDF, GitHub, SE, academic)
+│   ├── postproc/             # Post-processing (dedup, quality, normalize)
+│   ├── gui.py                # Main GUI window
+│   ├── config_generator.py   # config.yaml generator
+│   ├── pipeline.py           # Orchestrator
 │   └── ...
-├── tests/                    # Unit-тесты (166+ тестов)
+├── tests/                    # Unit tests (194+ tests)
 ├── CorpusBuilder.spec        # PyInstaller one-dir spec
-├── build.bat / build.sh      # Скрипты сборки
+├── build.bat / build.sh      # Build scripts
 └── README.md
 ```
 
-## Стиль кода
+## Code Style
 
-- Python 3.10+ (type hints, `match/case`, `|` вместо `Union`)
-- `ruff` для линтинга: `ruff check corpus_builder/`
-- Максимальная длина строки: 100 символов
-- Docstrings на русском языке (как в существующем коде)
-- Имена функций: `snake_case`
-- Имена классов: `PascalCase`
+- Python 3.10+ (type hints, `match/case`, `|` instead of `Union`)
+- `ruff` for linting: `ruff check corpus_builder/`
+- Maximum line length: 100 characters
+- Docstrings in Russian (consistent with existing code)
+- Function names: `snake_case`
+- Class names: `PascalCase`
 
-## Тесты
+## Testing
 
 ```bash
-# Запуск всех тестов
+# Run all tests
 pytest tests/ -v
 
-# Запуск конкретного модуля
+# Run a specific module
 pytest tests/test_quality_filters.py -v
 
-# С покрытием
+# With coverage
 pytest tests/ --cov=corpus_builder --cov-report=html
 ```
 
-**Перед PR убедитесь, что все тесты проходят:**
+**Before submitting a PR, ensure all tests pass:**
 ```bash
 pytest tests/ -q --ignore=tests/test_vcr_cassettes.py
 ```
 
-## Лицензия
+## License
 
-Внося вклад в проект, вы соглашаетесь, что ваш код будет распространяться
-под [некоммерческой лицензией](LICENSE) проекта. Любой коммерческий
-использование требует отдельного разрешения от автора.
+By contributing to this project, you agree that your code will be distributed
+under the project's [non-commercial license](LICENSE). Any commercial use
+requires separate permission from the author.

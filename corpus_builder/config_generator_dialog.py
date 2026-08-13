@@ -20,11 +20,12 @@ from urllib.parse import urlparse
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import QColor, QFont, QTextCursor, QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar, QTextEdit,
     QTableWidget, QTableWidgetItem, QTabWidget, QCheckBox, QSpinBox, QComboBox,
     QMessageBox, QGroupBox, QSplitter, QHeaderView, QStatusBar, QStyle,
-    QToolButton, QSizePolicy, QWidget
+    QToolButton, QSizePolicy, QWidget, QListWidget, QListWidgetItem, QScrollArea,
+    QButtonGroup, QRadioButton, QSlider, QFrame
 )
 
 from .app_settings import AppSettings
@@ -38,6 +39,7 @@ from .config_generator import (
     save_template_xlsx,
 )
 from .logging_setup import get_logger
+from .gui_improvements import tr
 
 log = get_logger(__name__)
 
@@ -504,46 +506,51 @@ class ConfigGeneratorDialog(QDialog):
     # ----------------- Стилизация -----------------
 
     def _build_wikipedia_tab(self) -> QWidget:
-        """Вкладка поиска статей Wikipedia по категориям."""
+        """Wikipedia search tab."""
         tab = QWidget()
-        layout = QFormLayout(tab)
+        layout = QVBoxLayout(tab)
         layout.setSpacing(8)
 
-        # Язык Wikipedia
+        # Language
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel(tr("wiki_lang_label")))
         self.wiki_lang_combo = QComboBox()
         self.wiki_lang_combo.addItems(["en", "ru", "de", "fr", "es", "it", "ja", "zh"])
-        layout.addRow("Язык Wikipedia:", self.wiki_lang_combo)
+        lang_row.addWidget(self.wiki_lang_combo)
+        lang_row.addStretch()
+        layout.addLayout(lang_row)
 
-        # Категории
-        layout.addRow(QLabel("Категории (через запятую):"))
+        # Categories
+        layout.addWidget(QLabel(tr("wiki_categories_label")))
         self.wiki_categories_edit = QLineEdit()
         self.wiki_categories_edit.setPlaceholderText("Electronics, Printed circuit boards, Operational amplifiers")
-        layout.addRow(self.wiki_categories_edit)
+        layout.addWidget(self.wiki_categories_edit)
 
         # Max articles
+        max_row = QHBoxLayout()
+        max_row.addWidget(QLabel(tr("wiki_max_label")))
         self.wiki_max_spin = QSpinBox()
         self.wiki_max_spin.setRange(1, 500)
         self.wiki_max_spin.setValue(50)
-        layout.addRow("Макс. статей на категорию:", self.wiki_max_spin)
+        max_row.addWidget(self.wiki_max_spin)
+        max_row.addStretch()
+        layout.addLayout(max_row)
 
-        # Depth (подкатегории)
+        # Depth
+        depth_row = QHBoxLayout()
+        depth_row.addWidget(QLabel(tr("wiki_depth_label")))
         self.wiki_depth_spin = QSpinBox()
         self.wiki_depth_spin.setRange(0, 3)
         self.wiki_depth_spin.setValue(1)
-        self.wiki_depth_spin.setToolTip("0 = только прямые статьи, 1 = + подкатегории, и т.д.")
-        layout.addRow("Глубина обхода подкатегорий:", self.wiki_depth_spin)
+        depth_row.addWidget(self.wiki_depth_spin)
+        depth_row.addStretch()
+        layout.addLayout(depth_row)
 
-        # Подсказка
-        hint = QLabel(
-            "💡 Примеры категорий:\n"
-            "  EN: Electronics, Printed circuit boards, Operational amplifiers,\n"
-            "      Microcontrollers, Power electronics, Semiconductors\n"
-            "  RU: Электроника, Печатные платы, Радиоэлектроника\n\n"
-            "См. полный список: en.wikipedia.org/wiki/Category:Electronics"
-        )
+        # Hint
+        hint = QLabel(tr("wiki_hint"))
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
-        layout.addRow(hint)
+        layout.addWidget(hint)
 
         layout.addStretch()
         return tab

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from .app_settings import AppSettings
+from .gui_improvements import tr
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -49,7 +50,7 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self.settings = settings
-        self.setWindowTitle("Настройки CorpusBuilder")
+        self.setWindowTitle(tr("settings_title"))
         self.resize(700, 600)
         self._build_ui()
         self._load_values()
@@ -61,11 +62,11 @@ class SettingsDialog(QDialog):
         outer.setSpacing(8)
 
         # Заголовок
-        title = QLabel("⚙  Настройки программы")
+        title = QLabel(tr("settings_header"))
         title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {ACCENT};")
         outer.addWidget(title)
 
-        subtitle = QLabel("Все настройки сохраняются автоматически и применяются к следующим запускам.")
+        subtitle = QLabel(tr("settings_subtitle"))
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
         outer.addWidget(subtitle)
@@ -86,29 +87,29 @@ class SettingsDialog(QDialog):
 
         # Кнопки
         btn_row = QHBoxLayout()
-        self.btn_reset = QPushButton("↺  Сбросить к defaults")
+        self.btn_reset = QPushButton(tr("settings_reset"))
         self.btn_reset.setProperty("secondary", True)
         self.btn_reset.clicked.connect(self._on_reset)
         btn_row.addWidget(self.btn_reset)
 
-        self.btn_export = QPushButton("📤  Экспорт настроек")
+        self.btn_export = QPushButton(tr("settings_export"))
         self.btn_export.setProperty("secondary", True)
         self.btn_export.clicked.connect(self._on_export)
         btn_row.addWidget(self.btn_export)
 
-        self.btn_import = QPushButton("📥  Импорт настроек")
+        self.btn_import = QPushButton(tr("settings_import"))
         self.btn_import.setProperty("secondary", True)
         self.btn_import.clicked.connect(self._on_import)
         btn_row.addWidget(self.btn_import)
 
         btn_row.addStretch()
 
-        self.btn_cancel = QPushButton("Отмена")
+        self.btn_cancel = QPushButton(tr("btn_cancel"))
         self.btn_cancel.setProperty("secondary", True)
         self.btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(self.btn_cancel)
 
-        self.btn_save = QPushButton("💾  Сохранить")
+        self.btn_save = QPushButton(tr("btn_save"))
         self.btn_save.setStyleSheet(
             f"background-color: {ACCENT}; color: white; font-weight: bold; padding: 8px 20px; min-height: 28px;"
         )
@@ -139,7 +140,7 @@ class SettingsDialog(QDialog):
         # Путь по умолчанию для config.yaml
         self.edit_last_config = QLineEdit()
         self.edit_last_config.setPlaceholderText("Путь к последнему config.yaml")
-        btn_config = QPushButton("Обзор...")
+        btn_config = QPushButton(tr("btn_browse"))
         btn_config.setProperty("secondary", True)
         btn_config.clicked.connect(lambda: self._browse_file(self.edit_last_config, "config.yaml", "YAML (*.yaml *.yml)"))
         config_row = QHBoxLayout()
@@ -150,7 +151,7 @@ class SettingsDialog(QDialog):
         # Папка вывода по умолчанию
         self.edit_last_output = QLineEdit()
         self.edit_last_output.setPlaceholderText("Папка для корпуса по умолчанию")
-        btn_output = QPushButton("Обзор...")
+        btn_output = QPushButton(tr("btn_browse"))
         btn_output.setProperty("secondary", True)
         btn_output.clicked.connect(lambda: self._browse_dir(self.edit_last_output))
         output_row = QHBoxLayout()
@@ -159,13 +160,13 @@ class SettingsDialog(QDialog):
         layout.addRow("Папка корпуса:", output_row)
 
         # Размер окна
-        size_group = QGroupBox("Размер окна")
+        size_group = QGroupBox(tr("st_window_size"))
         size_layout = QHBoxLayout(size_group)
-        size_layout.addWidget(QLabel("Ширина:"))
+        size_layout.addWidget(QLabel(tr("st_width")))
         self.spin_window_width = QSpinBox()
         self.spin_window_width.setRange(800, 3840)
         size_layout.addWidget(self.spin_window_width)
-        size_layout.addWidget(QLabel("Высота:"))
+        size_layout.addWidget(QLabel(tr("st_height")))
         self.spin_window_height = QSpinBox()
         self.spin_window_height.setRange(600, 2160)
         size_layout.addWidget(self.spin_window_height)
@@ -201,7 +202,7 @@ class SettingsDialog(QDialog):
         self.spin_max_file_size.setSuffix(" МБ")
         layout.addRow("Макс. размер файла:", self.spin_max_file_size)
 
-        self.chk_use_cache = QCheckBox("Использовать HTTP-кэш (requests-cache)")
+        self.chk_use_cache = QCheckBox(tr("st_use_cache"))
         self.chk_use_cache.setChecked(True)
         layout.addRow(self.chk_use_cache)
 
@@ -210,20 +211,20 @@ class SettingsDialog(QDialog):
         self.spin_cache_ttl.setSuffix(" часов")
         layout.addRow("Срок жизни кэша:", self.spin_cache_ttl)
 
-        self.chk_robots = QCheckBox("Уважать robots.txt")
+        self.chk_robots = QCheckBox(tr("st_robots"))
         self.chk_robots.setChecked(True)
         layout.addRow(self.chk_robots)
 
-        self.chk_browser_headers = QCheckBox("Использовать browser-like заголовки (Sec-Fetch-*)")
+        self.chk_browser_headers = QCheckBox(tr("st_browser_headers"))
         self.chk_browser_headers.setChecked(True)
         layout.addRow(self.chk_browser_headers)
 
         # Прокси
-        proxy_group = QGroupBox("Прокси (опционально)")
+        proxy_group = QGroupBox(tr("st_proxy"))
         proxy_layout = QVBoxLayout(proxy_group)
-        self.chk_use_proxy = QCheckBox("Использовать прокси")
+        self.chk_use_proxy = QCheckBox(tr("st_use_proxy"))
         proxy_layout.addWidget(self.chk_use_proxy)
-        proxy_layout.addWidget(QLabel("Список прокси (через запятую):"))
+        proxy_layout.addWidget(QLabel(tr("st_proxy_list")))
         self.edit_proxy_list = QTextEdit()
         self.edit_proxy_list.setMaximumHeight(80)
         self.edit_proxy_list.setPlaceholderText("http://user:pass@host:port, socks5://host:port, ...")
@@ -249,7 +250,7 @@ class SettingsDialog(QDialog):
         self.combo_html_mode.addItems(["trafilatura", "bs4"])
         layout.addRow("Режим извлечения:", self.combo_html_mode)
 
-        self.chk_download_images = QCheckBox("Скачивать изображения")
+        self.chk_download_images = QCheckBox(tr("st_download_images"))
         self.chk_download_images.setChecked(True)
         layout.addRow(self.chk_download_images)
 
@@ -272,7 +273,7 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        self.chk_ocr = QCheckBox("Включить OCR для скан-PDF (нужен tesseract)")
+        self.chk_ocr = QCheckBox(tr("st_ocr"))
         self.chk_ocr.setChecked(True)
         layout.addRow(self.chk_ocr)
 
@@ -298,18 +299,18 @@ class SettingsDialog(QDialog):
         self.spin_img_min_height.setSuffix(" px")
         layout.addRow("Мин. высота изображения:", self.spin_img_min_height)
 
-        self.chk_extract_tables = QCheckBox("Извлекать таблицы через pdfplumber")
+        self.chk_extract_tables = QCheckBox(tr("st_extract_tables"))
         layout.addRow(self.chk_extract_tables)
 
-        self.chk_two_column = QCheckBox("Авто-определение двухколоночной вёрстки")
+        self.chk_two_column = QCheckBox(tr("st_two_column"))
         self.chk_two_column.setChecked(True)
         layout.addRow(self.chk_two_column)
 
-        self.chk_filter_schematics = QCheckBox("Фильтровать схемы через OCR-ключевые слова")
+        self.chk_filter_schematics = QCheckBox(tr("st_filter_schematics"))
         self.chk_filter_schematics.setChecked(True)
         layout.addRow(self.chk_filter_schematics)
 
-        self.chk_use_toc = QCheckBox("Структурировать контент по TOC")
+        self.chk_use_toc = QCheckBox(tr("st_use_toc"))
         self.chk_use_toc.setChecked(True)
         layout.addRow(self.chk_use_toc)
 
@@ -338,17 +339,17 @@ class SettingsDialog(QDialog):
         self.edit_github_branch.setPlaceholderText("(пусто = auto-detect default branch)")
         layout.addRow("Ветка (пусто = авто):", self.edit_github_branch)
 
-        self.chk_crawl_issues = QCheckBox("Извлекать Issues/PR")
+        self.chk_crawl_issues = QCheckBox(tr("st_crawl_issues"))
         layout.addRow(self.chk_crawl_issues)
 
         self.spin_issues_max = QSpinBox()
         self.spin_issues_max.setRange(1, 500)
         layout.addRow("Макс. Issues/PR:", self.spin_issues_max)
 
-        self.chk_crawl_wiki = QCheckBox("Клонировать Wiki")
+        self.chk_crawl_wiki = QCheckBox(tr("st_crawl_wiki"))
         layout.addRow(self.chk_crawl_wiki)
 
-        self.chk_crawl_docs = QCheckBox("Парсить директорию docs/")
+        self.chk_crawl_docs = QCheckBox(tr("st_crawl_docs"))
         self.chk_crawl_docs.setChecked(True)
         layout.addRow(self.chk_crawl_docs)
 
@@ -421,7 +422,7 @@ class SettingsDialog(QDialog):
         self.spin_max_code.setSingleStep(0.05)
         layout.addRow("Макс. доля кода (0-1):", self.spin_max_code)
 
-        self.chk_spam = QCheckBox("Проверять на спам/рекламу")
+        self.chk_spam = QCheckBox(tr("st_spam"))
         self.chk_spam.setChecked(True)
         layout.addRow(self.chk_spam)
 
@@ -434,21 +435,21 @@ class SettingsDialog(QDialog):
         layout.addRow("Разрешённые языки:", self.edit_langs_allowed)
 
         # Perplexity (опционально)
-        perplexity_group = QGroupBox("Perplexity-фильтр (опционально, требует kenlm)")
+        perplexity_group = QGroupBox(tr("st_perplexity_group"))
         perplexity_layout = QVBoxLayout(perplexity_group)
-        self.chk_perplexity = QCheckBox("Включить perplexity-фильтр")
+        self.chk_perplexity = QCheckBox(tr("st_perplexity"))
         perplexity_layout.addWidget(self.chk_perplexity)
-        perplexity_layout.addWidget(QLabel("Макс. perplexity:"))
+        perplexity_layout.addWidget(QLabel(tr("st_max_perplexity")))
         self.spin_max_perplexity = QDoubleSpinBox()
         self.spin_max_perplexity.setRange(10.0, 100000.0)
         self.spin_max_perplexity.setValue(1000.0)
         perplexity_layout.addWidget(self.spin_max_perplexity)
-        perplexity_layout.addWidget(QLabel("Путь к kenlm-модели (.binary):"))
+        perplexity_layout.addWidget(QLabel(tr("st_perplexity_model")))
         perplexity_path_row = QHBoxLayout()
         self.edit_perplexity_model = QLineEdit()
         self.edit_perplexity_model.setPlaceholderText("/path/to/model.binary")
         perplexity_path_row.addWidget(self.edit_perplexity_model)
-        btn_perp_model = QPushButton("Обзор...")
+        btn_perp_model = QPushButton(tr("btn_browse"))
         btn_perp_model.setProperty("secondary", True)
         btn_perp_model.clicked.connect(lambda: self._browse_file(self.edit_perplexity_model, "kenlm model", "KenLM model (*.binary *.arpa);;All files (*)"))
         perplexity_path_row.addWidget(btn_perp_model)
@@ -466,11 +467,11 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        self.chk_exact = QCheckBox("Точная дедупликация (sha1)")
+        self.chk_exact = QCheckBox(tr("st_dedup_exact"))
         self.chk_exact.setChecked(True)
         layout.addRow(self.chk_exact)
 
-        self.chk_minhash = QCheckBox("Нечёткая дедупликация (MinHash LSH)")
+        self.chk_minhash = QCheckBox(tr("st_dedup_minhash"))
         self.chk_minhash.setChecked(True)
         layout.addRow(self.chk_minhash)
 
@@ -483,14 +484,14 @@ class SettingsDialog(QDialog):
         self.spin_minhash_threshold.setSingleStep(0.01)
         layout.addRow("Порог Jaccard (0.5-1.0):", self.spin_minhash_threshold)
 
-        self.chk_dedup_images = QCheckBox("Дедупликация изображений (sha1)")
+        self.chk_dedup_images = QCheckBox(tr("st_dedup_images"))
         self.chk_dedup_images.setChecked(True)
         layout.addRow(self.chk_dedup_images)
 
-        self.chk_streaming = QCheckBox("Streaming MinHash (для больших корпусов, экономит RAM)")
+        self.chk_streaming = QCheckBox(tr("st_streaming"))
         layout.addRow(self.chk_streaming)
 
-        self.chk_incremental = QCheckBox("Incremental dedup (сохранять LSH-индекс между прогонами)")
+        self.chk_incremental = QCheckBox(tr("st_incremental"))
         layout.addRow(self.chk_incremental)
 
         return tab
@@ -504,7 +505,7 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        self.chk_async = QCheckBox("Использовать асинхронный краулинг по умолчанию")
+        self.chk_async = QCheckBox(tr("st_async"))
         layout.addRow(self.chk_async)
 
         self.spin_max_concurrent = QSpinBox()
@@ -528,10 +529,10 @@ class SettingsDialog(QDialog):
         )
         layout.addRow("Таймаут на один URL:", self.spin_url_timeout)
 
-        self.chk_gzip = QCheckBox("Сжимать корпус в .jsonl.gz (экономия места 4-6x)")
+        self.chk_gzip = QCheckBox(tr("st_gzip"))
         layout.addRow(self.chk_gzip)
 
-        self.chk_parallel_postproc = QCheckBox("Параллельная пост-обработка (multiprocessing)")
+        self.chk_parallel_postproc = QCheckBox(tr("st_parallel"))
         layout.addRow(self.chk_parallel_postproc)
 
         self.spin_parallel_workers = QSpinBox()
@@ -557,7 +558,7 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        self.chk_show_progress = QCheckBox("Показывать прогресс-бар в терминале (tqdm)")
+        self.chk_show_progress = QCheckBox(tr("st_show_progress"))
         self.chk_show_progress.setChecked(True)
         layout.addRow(self.chk_show_progress)
 

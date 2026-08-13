@@ -109,6 +109,7 @@ class ExportSettings:
 @dataclass
 class GuiSettings:
     theme: str = "dark"
+    language: str = "ru"  # ru | en
     log_level: str = "INFO"
     show_progress_bar: bool = True
     window_width: int = 1280

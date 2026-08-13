@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from .auto_discover import AutoDiscover
 from .logging_setup import get_logger
+from .gui_improvements import tr
 
 log = get_logger(__name__)
 
@@ -93,7 +94,7 @@ class AutoDiscoverDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🔄 Авто-поиск источников")
+        self.setWindowTitle(tr("ad_title"))
         self.resize(700, 600)
         self.sources_count = 0
         self.config_path = None
@@ -106,7 +107,7 @@ class AutoDiscoverDialog(QDialog):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        title = QLabel("🔄 Авто-поиск источников")
+        title = QLabel(tr("ad_title"))
         title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {ACCENT};")
         outer.addWidget(title)
 
@@ -119,9 +120,9 @@ class AutoDiscoverDialog(QDialog):
         outer.addWidget(subtitle)
 
         # Предустановки
-        preset_group = QGroupBox("🎯 Быстрый старт (пресеты)")
+        preset_group = QGroupBox(tr("ad_presets"))
         preset_layout = QHBoxLayout(preset_group)
-        preset_layout.addWidget(QLabel("Выбрать профиль:"))
+        preset_layout.addWidget(QLabel(tr("ad_select_preset")))
 
         self.combo_preset = QComboBox()
         presets = AutoDiscover.get_preset_topics()
@@ -132,19 +133,19 @@ class AutoDiscoverDialog(QDialog):
         self.combo_preset.currentIndexChanged.connect(self._on_preset_selected)
         preset_layout.addWidget(self.combo_preset, stretch=1)
 
-        self.btn_apply_preset = QPushButton("Применить")
+        self.btn_apply_preset = QPushButton(tr("ad_apply"))
         self.btn_apply_preset.clicked.connect(self._apply_preset)
         preset_layout.addWidget(self.btn_apply_preset)
         outer.addWidget(preset_group)
 
         # Ручная настройка
-        manual_group = QGroupBox("⚙ Ручная настройка")
+        manual_group = QGroupBox(tr("ad_manual"))
         manual_layout = QFormLayout(manual_group)
 
         # GitHub topics
         self.edit_github_topics = QLineEdit()
         self.edit_github_topics.setPlaceholderText("kicad, pcb, embedded, electronics")
-        manual_layout.addRow("GitHub topics:", self.edit_github_topics)
+        manual_layout.addRow(tr("ad_github_topics"), self.edit_github_topics)
 
         # StackExchange tags
         se_row = QHBoxLayout()
@@ -155,7 +156,7 @@ class AutoDiscoverDialog(QDialog):
         self.combo_se_site = QComboBox()
         self.combo_se_site.addItems(["electronics", "stackoverflow", "serverfault"])
         se_row.addWidget(self.combo_se_site)
-        manual_layout.addRow("StackExchange tags:", se_row)
+        manual_layout.addRow(tr("ad_se_tags"), se_row)
 
         # Wikipedia categories
         wiki_row = QHBoxLayout()
@@ -189,12 +190,12 @@ class AutoDiscoverDialog(QDialog):
         self.spin_max_per_source = QSpinBox()
         self.spin_max_per_source.setRange(1, 500)
         self.spin_max_per_source.setValue(50)
-        manual_layout.addRow("Макс. источников с одной платформы:", self.spin_max_per_source)
+        manual_layout.addRow(tr("ad_max_per_source"), self.spin_max_per_source)
 
         outer.addWidget(manual_group)
 
         # Прогресс
-        prog_group = QGroupBox("Прогресс")
+        prog_group = QGroupBox(tr("ad_progress"))
         prog_layout = QVBoxLayout(prog_group)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -205,7 +206,7 @@ class AutoDiscoverDialog(QDialog):
         outer.addWidget(prog_group)
 
         # Таблица найденных URL
-        outer.addWidget(QLabel("Найденные источники:"))
+        outer.addWidget(QLabel(tr("ad_found_sources")))
         self.results_table = QTableWidget(0, 3)
         self.results_table.setHorizontalHeaderLabels(["URL", "Тип", "Категории"])
         header = self.results_table.horizontalHeader()
@@ -218,14 +219,14 @@ class AutoDiscoverDialog(QDialog):
 
         # Кнопки
         btn_row = QHBoxLayout()
-        self.btn_search = QPushButton("🔍  Начать поиск")
+        self.btn_search = QPushButton(tr("ad_search"))
         self.btn_search.setStyleSheet(
             f"background-color: {ACCENT}; color: white; font-weight: bold; padding: 8px 18px; min-height: 28px;"
         )
         self.btn_search.clicked.connect(self._on_search)
         btn_row.addWidget(self.btn_search)
 
-        self.btn_stop = QPushButton("⏹  Остановить")
+        self.btn_stop = QPushButton(tr("ad_stop"))
         self.btn_stop.setProperty("danger", True)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
@@ -233,7 +234,7 @@ class AutoDiscoverDialog(QDialog):
 
         btn_row.addStretch()
 
-        self.btn_save = QPushButton("💾  Сохранить config.yaml")
+        self.btn_save = QPushButton(tr("ad_save"))
         self.btn_save.setEnabled(False)
         self.btn_save.clicked.connect(self._on_save)
         btn_row.addWidget(self.btn_save)

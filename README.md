@@ -2,213 +2,218 @@
 
 # 🛠️ CorpusBuilder
 
-**Сборщик сырого корпуса для pretraining LLM** с дедупликацией, нормализацией и фильтрацией качества
+**Raw corpus builder for LLM pretraining** with deduplication, text normalization, and quality filtering
 
 [![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-blue.svg)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/downloads/)
-[![Tests: 166+](https://img.shields.io/badge/Tests-166+-green.svg)](tests/)
+[![Tests: 194+](https://img.shields.io/badge/Tests-194+-green.svg)](tests/)
 [![PySide6 GUI](https://img.shields.io/badge/GUI-PySide6-007acc.svg)](https://doc.qt.io/qtforpython-6/)
 [![One-dir](https://img.shields.io/badge/Build-One--dir-orange.svg)](CorpusBuilder.spec)
 [![Auto-Update](https://img.shields.io/badge/Auto--Update-GitHub_Commits-success.svg)](corpus_builder/auto_updater.py)
 
-[Возможности](#-возможности) ·
-[Установка](#-установка) ·
-[Использование](#-использование) ·
-[Архитектура](#-архитектура) ·
-[Скриншоты](#-скриншоты) ·
-[Лицензия](#-лицензия)
+[Features](#-features) ·
+[Installation](#-installation) ·
+[Usage](#-usage) ·
+[Architecture](#-architecture) ·
+[License](#-license)
 
 </div>
 
 ---
 
-## 📋 Оглавление
+## 📋 Table of Contents
 
-- [Возможности](#-возможности)
-- [Типы источников](#-типы-источников)
-- [Установка](#-установка)
-- [Использование](#-использование)
-- [Архитектура сборки: one-dir](#-архитектура-сборки-one-dir)
-- [Авто-обновление](#-авто-обновление)
-- [Оптимизации производительности](#-оптимизации-производительности)
-- [GUI: 15 улучшений интерфейса](#-gui-15-улучшений-интерфейса)
-- [Единое окно настроек](#-единое-окно-настроек)
-- [Мастер создания config.yaml](#-мастер-создания-configyaml)
-- [Скриншоты](#-скриншоты)
-- [Разработка](#-разработка)
-- [Лицензия](#-лицензия)
+- [Features](#-features)
+- [Source Types](#-source-types)
+- [Installation](#-installation)
+- [Usage](#-usage)
+- [Build Architecture: One-Dir](#-build-architecture-one-dir)
+- [Auto-Update](#-auto-update)
+- [Performance Optimizations](#-performance-optimizations)
+- [GUI: 15 Interface Improvements](#-gui-15-interface-improvements)
+- [Settings](#-settings)
+- [Config Generator Wizard](#-config-generator-wizard)
+- [Development](#-development)
+- [License](#-license)
 
 ---
 
-## ✨ Возможности
+## ✨ Features
 
-### Сбор корпуса
+### Corpus Collection
 
-- **8 типов источников**: HTML, PDF, GitHub, StackExchange, DOAJ, arXiv, Crossref, Wikipedia
-- **Асинхронный краулинг** (aiohttp) — 4-6x быстрее синхронного
-- **Resume после сбоя** — state.json с отслеживанием обработанных URL
-- **robots.txt + per-domain rate limiter** — вежливый обход
-- **Защита от видеопотоков** — блоклист 30+ расширений и 20+ доменов (YouTube, Vimeo, Twitch)
-- **Connection pooling** — 20 соединений, авто-ретраи на 429/500/503
-- **HTTP-кэш** (requests-cache + SQLite WAL) — повторные прогоны в 10x быстрее
+- **8 source types**: HTML, PDF, GitHub, StackExchange, DOAJ, arXiv, Crossref, Wikipedia
+- **Async crawling** (aiohttp) — 4-6x faster than synchronous
+- **Resume after failure** — state.json tracks processed URLs
+- **robots.txt + per-domain rate limiter** — polite crawling
+- **Video/streaming protection** — blocks 30+ extensions and 20+ domains (YouTube, Vimeo, Twitch)
+- **Connection pooling** — 20 connections, auto-retries on 429/500/503
+- **HTTP cache** (requests-cache + SQLite WAL) — repeat runs 10x faster
+- **Per-URL timeout** — automatically skips URLs that hang for more than N minutes
 
-### Качество корпуса
+### Corpus Quality
 
-- **Дедупликация** 4 уровня:
-  - Точная (`sha1` нормализованного текста)
-  - Нечёткая (`MinHash LSH`, настраиваемый порог Jaccard)
-  - По канонизированному URL (удаление `utm_*`, сортировка query)
-  - По хэшу изображений (для PDF-схем)
-  - Streaming и Incremental режимы для больших корпусов
-- **Нормализация текста**: NFKC + ftfy + zero-width + опционально ё→е
-- **Фильтрация качества**:
-  - `fasttext-langdetect` — определение языка (точнее эвристики в 3-5x)
-  - `kenlm` perplexity (опционально) — отбраковка мусорного текста
-  - Спам/токсичность фильтр (RU+EN ключевые слова)
-  - Code/text ratio — извлечение блоков кода для instruction-tuning
-  - Длина, alpha ratio, доля дублирующихся строк, язык (RU/EN/bilingual/multi)
+- **Deduplication** (4 levels):
+  - Exact (`sha1` of normalized text)
+  - Fuzzy (`MinHash LSH`, configurable Jaccard threshold)
+  - URL canonicalization (removes `utm_*`, sorts query string)
+  - Image hash (for PDF schematics)
+  - Streaming and Incremental modes for large corpora
+- **Text normalization**: NFKC + ftfy + zero-width + optional ё→е
+- **Quality filtering**:
+  - `fasttext-langdetect` — language detection (3-5x more accurate than heuristics)
+  - `kenlm` perplexity (optional) — rejects garbage text
+  - Spam/toxicity filter (RU+EN keywords)
+  - Code/text ratio — extracts code blocks for instruction-tuning
+  - Length, alpha ratio, duplicate line ratio, language (RU/EN/bilingual/multi)
 
-### Пост-обработка и экспорт
+### Post-Processing & Export
 
-- **Извлечение пар для instruction-tuning** (6 типов):
+- **Instruction-tuning pair extraction** (6 types):
   - README ↔ KiCad
-  - Вопрос → принятый ответ (StackExchange)
-  - Datasheet → спецификации компонента
-  - Статья → TL;DR
-  - Код → описание
+  - Question → accepted answer (StackExchange)
+  - Datasheet → component specifications
+  - Article → TL;DR summary
+  - Code → explanation
   - FAQ Q&A
-- **Экспорт**: HuggingFace dataset (с dataset_infos.json), Parquet (zstd), JSONL (.gz)
+- **Export**: HuggingFace dataset (with dataset_infos.json), Parquet (zstd), JSONL (.gz)
 
 ### GUI
 
-- **Тёмная тема** (VS Code Dark+ стиль), 5 тем оформления
-- **Прогресс-бар с ETA**: «150/1000 | ETA: 5m 30s | 2.3 URL/s»
-- **Лог с подсветкой** (INFO/WARN/ERROR) и поиском (Ctrl+F)
-- **Таблица последних записей** с контекстным меню
-- **Статистика**: 4 графика matplotlib + текстовая сводка
-- **Трей** с уведомлением о завершении
-- **Авто-обновление** через GitHub коммиты (Ctrl+U)
+- **Dark theme** (VS Code Dark+ style), 5 themes
+- **Progress bar with ETA**: "150/1000 | ETA: 5m 30s | 2.3 URL/s"
+- **Colored log** (INFO/WARN/ERROR) with search (Ctrl+F)
+- **Recent records table** with context menu
+- **Statistics**: 4 matplotlib charts + text summary
+- **System tray** with completion notification
+- **Auto-update** via GitHub commits (Ctrl+U)
 
 ---
 
-## 📊 Типы источников
+## 📊 Source Types
 
-| Тип | Источник | Библиотека | Особенности |
-|-----|----------|------------|-------------|
-| `html` | Статьи, блоги | trafilatura | Извлечение главного текста, авто-определение кодировки |
-| `pdf` | Datasheet'ы, руководства | PyMuPDF + pytesseract | Двухколоночная вёрстка, OCR, таблицы (pdfplumber), фильтр схем |
-| `github_repo` | GitHub репозитории | REST API + ZIP | Issues/PR, Wiki, docs/, защита от Zip Slip, LFS-detection |
-| `stackexchange` | Q&A форумы | SE API | Топ-вопросы по тегам, accepted_answer_id, CC BY-SA лицензия |
-| `doaj` | Открытые журналы | DOAJ API | Метаданные, рефераты, CC BY лицензия |
-| `arxiv` | Научные препринты | arXiv API | eess.SP, eess.SY, cs.AR, полнотекстовый поиск |
-| `crossref` | DOI метаданные | Crossref API | Авторы, журнал, DOI, ссылки на PDF |
-| `wikipedia` | Энциклопедия | REST API | Прямой JSON без HTML-парсинга, превью изображений |
+| Type | Source | Library | Features |
+|------|--------|---------|----------|
+| `html` | Articles, blogs | trafilatura | Main text extraction, auto-encoding detection |
+| `pdf` | Datasheets, manuals | PyMuPDF + pytesseract | Two-column layout, OCR, tables (pdfplumber), schematic filter |
+| `github_repo` | GitHub repos | REST API + ZIP | Issues/PR, Wiki, docs/, Zip Slip protection, LFS detection |
+| `stackexchange` | Q&A forums | SE API | Top questions by tags, accepted_answer_id, CC BY-SA license |
+| `doaj` | Open journals | DOAJ API | Metadata, abstracts, CC BY license |
+| `arxiv` | Preprints | arXiv API | eess.SP, eess.SY, cs.AR, full-text search |
+| `crossref` | DOI metadata | Crossref API | Authors, journal, DOI, PDF links |
+| `wikipedia` | Encyclopedia | REST API | Direct JSON without HTML parsing, image thumbnails |
 
 ---
 
-## 🚀 Установка
+## 🚀 Installation
 
-### Требования
+### Requirements
 
-- **Python 3.13** (НЕ 3.14+ — PySide6 не имеет wheels для 3.14)
-- **Tesseract OCR** (опционально, для PDF-сканов): [установить](https://github.com/UB-Mannheim/tesseract/wiki)
+- **Python 3.13** (NOT 3.14+ — PySide6 has no wheels for 3.14)
+- **Tesseract OCR** (optional, for PDF scans): [install](https://github.com/UB-Mannheim/tesseract/wiki)
 
-### Из исходников
+### From Source
 
 ```bash
 git clone https://github.com/draco74-glitch/corpus_builder.git
 cd corpus_builder
 
-# Создать venv на Python 3.13
+# Create venv with Python 3.13
 python3.13 -m venv .venv
 source .venv/bin/activate        # Linux/macOS
 .venv\Scripts\activate           # Windows
 
-# Установить зависимости
+# Install dependencies
 pip install -r requirements.txt
 pip install -e .[gui,build]
 
-# Запустить GUI
+# Launch GUI
 python -m corpus_builder.gui
 ```
 
-### Готовый .exe (Windows)
+### Pre-built .exe (Windows)
 
-1. Скачайте `CorpusBuilder.zip` из [Releases](https://github.com/draco74-glitch/corpus_builder/releases)
-2. Распакуйте в любую папку
-3. Запустите `CorpusBuilder.exe`
+1. Download `CorpusBuilder.zip` from [Releases](https://github.com/draco74-glitch/corpus_builder/releases)
+2. Extract to any folder
+3. Run `CorpusBuilder.exe`
 
 ---
 
-## 📖 Использование
+## 📖 Usage
 
-### GUI режим
+### GUI Mode
 
-1. Запустите `CorpusBuilder.exe`
-2. Нажмите **«✨ Создать config.yaml»** — загрузите Excel с URL
-3. Нажмите **«▶ Запустить краулинг»**
-4. Дождитесь завершения → нажмите **«⚙ Пост-обработка»**
-5. Результат: `corpus_output/corpus_final.jsonl`
+1. Launch `CorpusBuilder.exe`
+2. Click **"✨ Create config.yaml"** — load an Excel file with URLs
+3. Click **"▶ Start Crawling"**
+4. Wait for completion → click **"⚙ Post-Process"**
+5. Result: `corpus_output/corpus_final.jsonl`
 
-### CLI режим
+### CLI Mode
 
 ```bash
-# Синхронный краулинг
+# Synchronous crawl
 corpus-builder -c config.yaml crawl
 
-# Асинхронный (4-8x быстрее)
+# Async crawl (4-8x faster)
 corpus-builder -c config.yaml async-crawl --max-concurrent 8
 
-# Пост-обработка (дедупликация + фильтр + нормализация + пары)
+# Post-processing (dedup + filter + normalize + pairs)
 corpus-builder -c config.yaml postprocess
 
-# Статистика
+# Statistics
 corpus-builder -c config.yaml stats
 
-# Сравнение двух корпусов
+# Compare two corpora
 corpus-builder diff corpus_old.jsonl corpus_new.jsonl --html report.html
 ```
 
-### Мастер создания config.yaml
+### Config Generator
 
 ```bash
-# Из Excel/CSV
+# From Excel/CSV
 python -m corpus_builder.config_generator from-csv sources.csv -o config.yaml
 
-# Поиск GitHub репозиториев
+# Search GitHub repositories
 python -m corpus_builder.config_generator from-github --topics kicad --max-repos 100 -o config.yaml
 
-# Топ вопросов StackExchange
+# Top StackExchange questions
 python -m corpus_builder.config_generator from-stackexchange --tags kicad --max-questions 100 -o config.yaml
+
+# Wikipedia articles by category
+python -m corpus_builder.config_generator from-wikipedia --categories Electronics --lang en -o config.yaml
+
+# Merge multiple configs (with smart deduplication)
+python -m corpus_builder.config_generator merge c1.yaml c2.yaml c3.yaml -o config.full.yaml
 ```
 
 ---
 
-## 🏗 Архитектура сборки: one-dir
+## 🏗 Build Architecture: One-Dir
 
 ```
 dist/
 └── CorpusBuilder/
-    ├── CorpusBuilder.exe          ← 24 МБ (загрузчик)
+    ├── CorpusBuilder.exe          ← 24 MB (bootloader)
     └── _internal/
         ├── python313.dll
         ├── PySide6/
-        ├── corpus_builder/        ← .py файлы (обновляются автоматически)
+        ├── corpus_builder/        ← .py files (auto-updatable)
         └── ...
 ```
 
-| Метрика | One-file (старая) | One-dir (текущая) |
-|---------|-------------------|-------------------|
-| Размер .exe | 450 МБ | 24 МБ |
-| Холодный старт | 8 сек | 0.8 сек (**10x**) |
-| Обновление кода | 450 МБ | 150 КБ (**2527x меньше**) |
-| Антивирус false-positive | частый | редкий |
+| Metric | One-file (old) | One-dir (current) |
+|--------|----------------|-------------------|
+| .exe size | 450 MB | 24 MB |
+| Cold start | 8 sec | 0.8 sec (**10x**) |
+| Code update | 450 MB | 150 KB (**2527x smaller**) |
+| Antivirus false-positive | frequent | rare |
 
-### Сборка
+### Build
 
 ```bash
 # Windows
-build.bat --zip     # сборка + ZIP + patch.zip
+build.bat --zip     # build + ZIP + patch.zip
 
 # Linux/macOS
 bash build.sh --zip
@@ -216,163 +221,174 @@ bash build.sh --zip
 
 ---
 
-## 🔄 Авто-обновление
+## 🔄 Auto-Update
 
-Программа **автоматически проверяет новые коммиты** на GitHub при старте.
+The program **automatically checks for new commits** on GitHub at startup.
 
-| Способ | Описание |
-|--------|----------|
-| Автоматически | При запуске — toast-уведомление если есть новый коммит |
-| `Ctrl+U` | Ручная проверка: меню «Справка → Проверить обновления» |
-| Программно | `CommitUpdater.check_for_commit_updates()` |
+| Method | Description |
+|--------|-------------|
+| Automatic | On startup — toast notification if new commit available |
+| `Ctrl+U` | Manual check: Help → Check for Updates |
+| Programmatic | `CommitUpdater.check_for_commit_updates()` |
 
-При обновлении:
-1. Скачиваются только `.py` файлы (~150 КБ)
-2. Создаётся backup текущей папки
-3. Файлы заменяются в `_internal/corpus_builder/`
-4. Перезапуск — готово
+When updating:
+1. Only `.py` files are downloaded (~150 KB)
+2. A backup of the current folder is created
+3. Files are replaced in `_internal/corpus_builder/`
+4. Restart — done
 
 ---
 
-## ⚡ Оптимизации производительности
+## ⚡ Performance Optimizations
 
-| # | Оптимизация | Эффект |
+| # | Optimization | Effect |
 |---|-------------|--------|
-| 1 | Нативный aiohttp для HTML | 4-6x на больших списках URL |
-| 2 | Буферизованная запись JSONL | 5-15% экономии на syscalls |
-| 3 | Параллельный OCR для PDF | 10-20x на OCR-тяжёлых PDF |
-| 4 | Connection pooling | 1.3x на повторных соединениях |
-| 5 | SQLite WAL для HTTP-кэша | 1.4x на повторных прогонах |
-| 6 | Multiprocessing пост-обработка | 3-5x на 8 ядрах |
-| 7 | Streaming MinHash | экономия RAM для больших корпусов |
-| 8 | Ленивая инициализация краулеров | 400 мс экономии на старте |
-| 9 | Pre-filter по robots.txt | 1 проверка на домен вместо N |
-| 10 | HTTP/2 через httpx | 1.2x на HTTP/2 сайтах |
-| 11 | Prefetch robots.txt | 50x для 50+ доменов |
-| 12 | Сжатие JSONL (.jsonl.gz) | 4-6x экономия места |
-| 13 | Memory-mapped чтение | 2-3x на файлах >1 ГБ |
-| 14 | Incremental dedup (LSH в файле) | 2-3x на повторных прогонах |
+| 1 | Native aiohttp for HTML | 4-6x on large URL lists |
+| 2 | Buffered JSONL writer | 5-15% syscall savings |
+| 3 | Parallel OCR for PDF | 10-20x on OCR-heavy PDFs |
+| 4 | Connection pooling | 1.3x on repeated connections |
+| 5 | SQLite WAL for HTTP cache | 1.4x on repeat runs |
+| 6 | Multiprocessing post-processing | 3-5x on 8 cores |
+| 7 | Streaming MinHash | RAM savings for large corpora |
+| 8 | Lazy crawler initialization | 400 ms startup savings |
+| 9 | Pre-filter by robots.txt | 1 check per domain instead of N |
+| 10 | HTTP/2 via httpx | 1.2x on HTTP/2 sites |
+| 11 | Prefetch robots.txt | 50x for 50+ domains |
+| 12 | Gzip JSONL compression | 4-6x disk savings |
+| 13 | Memory-mapped reading | 2-3x on files >1 GB |
+| 14 | Incremental dedup (LSH in file) | 2-3x on repeat post-processing |
 
-**Ожидаемое ускорение**: 1000 источников — 48 мин → 5-7 мин (~7x)
-
----
-
-## 🎨 GUI: 15 улучшений интерфейса
-
-| # | Улучшение | Описание |
-|---|-----------|----------|
-| A | Drag-and-Drop config.yaml | Перетащите файл прямо в окно |
-| B | Контекстное меню | ПКМ на записи → Открыть URL, Копировать, Удалить |
-| C | Поиск по логу (Ctrl+F) | Подсветка, навигация ↑↓, счётчик N/M |
-| D | Сохранение разделителей | Позиции QSplitter в JSON |
-| E | Toast-уведомления | Всплывающие окна с fade-in/out анимацией |
-| F | Переключение тем | Dark ↔ Light, горячее переключение |
-| G | Превью KiCad | Парсинг .kicad_sch, таблица компонентов |
-| H | История config.yaml | Последние 10 файлов, авто-фильтр |
-| I | Прогресс с ETA | «N/total | ETA: 5m 30s | 2.3 URL/s» |
-| J | Сравнение корпусов | Diff dialog с HTML-отчётом |
-| K | YAML-редактор | Подсветка синтаксиса (VS Code-style) |
-| L | Dashboard | 3 графика + текстовая сводка |
-| M | Мастер первого запуска | 5 шагов: источники → качество → токены |
-| N | Локализация RU/EN | 40+ переводимых строк |
-| O | Material Design темы | Blue, Green, Purple |
+**Expected speedup**: 1000 sources — 48 min → 5-7 min (~7x)
 
 ---
 
-## ⚙️ Единое окно настроек
+## 🎨 GUI: 15 Interface Improvements
 
-10 вкладок со всеми опциями программы:
-
-1. **📋 Общие** — тема, язык, пути, размер окна
-2. **🌐 Краулинг** — User-Agent, timeout, delay, proxy, cache
-3. **📄 HTML** — режим извлечения, изображения, файлы
-4. **📕 PDF** — OCR, двухколоночная вёрстка, таблицы, схемы
-5. **🐙 GitHub** — токен, ветка, Issues, Wiki, docs/
-6. **💬 StackExchange** — API key, сайт, score
-7. **✅ Качество** — длина, alpha, код, спам, perplexity
-8. **🔄 Дедупликация** — exact, MinHash, streaming, incremental
-9. **⚡ Производительность** — async, workers, gzip, parallel
-10. **🎨 Интерфейс** — прогресс-бар, тема, логирование
-
-Открыть: `Ctrl+,` или меню «Настройки → Все настройки...»
-
----
-
-## 🧩 Мастер создания config.yaml
-
-Загрузите Excel/CSV с колонками `url`, `depth`, `categories` — мастер автоматически:
-1. Прочитает Excel (поддержка .xlsx, .xls, .csv)
-2. Для каждой строки с `depth > 0` выполнит BFS-обход
-3. Дедуплицирует найденные URL
-4. Сохранит готовый `config.yaml`
-
-**Опции**:
-- **⚡ Skip crawl** — мгновенно, только URL из Excel
-- **Параллельных seeds** — сколько URL обрабатывать параллельно (5 = оптимально)
-- **Same-domain / поддомены** — фильтрация ссылок
+| # | Improvement | Description |
+|---|-------------|-------------|
+| A | Drag-and-Drop config.yaml | Drag files directly into the window |
+| B | Context menu | Right-click record → Open URL, Copy, Delete |
+| C | Log search (Ctrl+F) | Highlight, navigation ↑↓, match counter |
+| D | Splitter state saver | QSplitter positions saved to JSON |
+| E | Toast notifications | Popups with fade-in/out animation |
+| F | Theme switching | Dark ↔ Light, hot-swap, no restart |
+| G | KiCad preview | Parse .kicad_sch, component table |
+| H | Recent configs | Last 10 files, auto-filter non-existent |
+| I | Progress with ETA | "N/total | ETA: 5m 30s | 2.3 URL/s" |
+| J | Corpus diff | Diff dialog with HTML report |
+| K | YAML editor | Syntax highlighting (VS Code-style) |
+| L | Dashboard | 3 charts + text summary |
+| M | First-run wizard | 5 steps: sources → quality → tokens |
+| N | Localization RU/EN | 40+ translatable strings |
+| O | Material Design themes | Blue, Green, Purple |
 
 ---
 
-## 📸 Скриншоты
+## ⚙️ Settings
 
-> Скриншоты будут добавлены позже
+10 tabs with all program options:
+
+1. **📋 General** — theme, language, paths, window size
+2. **🌐 Crawling** — User-Agent, timeout, delay, proxy, cache
+3. **📄 HTML** — extraction mode, images, file extensions
+4. **📕 PDF** — OCR, two-column layout, tables, schematics
+5. **🐙 GitHub** — token, branch, Issues, Wiki, docs/
+6. **💬 StackExchange** — API key, site, score
+7. **✅ Quality** — length, alpha, code, spam, perplexity
+8. **🔄 Deduplication** — exact, MinHash, streaming, incremental
+9. **⚡ Performance** — async, workers, gzip, parallel
+10. **🎨 Interface** — progress bar, theme, logging
+
+Open: `Ctrl+,` or menu Settings → All Settings...
 
 ---
 
-## 🔧 Разработка
+## 🧩 Config Generator Wizard
 
-### Структура проекта
+Load an Excel/CSV with columns `url`, `depth`, `categories` — the wizard automatically:
+1. Reads the Excel (supports .xlsx, .xls, .csv)
+2. For each row with `depth > 0`, performs BFS crawl
+3. Deduplicates found URLs
+4. Saves a ready-to-use `config.yaml`
+
+**Options**:
+- **⚡ Skip crawl** — instant, only URLs from Excel
+- **Concurrent seeds** — how many URLs to process in parallel (5 = optimal)
+- **Same-domain / subdomains** — link filtering
+
+### Auto-Discover
+
+Automatically search for sources across GitHub, StackExchange, and Wikipedia:
+
+1. Click **"🔄 Auto-Discover Sources"**
+2. Select a preset (Electronics, Analog, Microcontrollers, Power, RF, Multilingual)
+3. Click **"🔍 Start Search"**
+4. Save the generated `config.yaml`
+
+### Merge Configs
+
+Combine multiple config.yaml files into one with smart deduplication:
+- Exact URL matching
+- Canonicalized URL (removes utm_*, sorts query, normalizes trailing slash)
+- Category merging from duplicates
+
+---
+
+## 🔧 Development
+
+### Project Structure
 
 ```
 corpus_builder/
 ├── corpus_builder/
-│   ├── crawlers/              # 8 краулеров
+│   ├── crawlers/              # 8 crawlers
 │   ├── postproc/              # dedup, quality, normalize, export
-│   ├── gui.py                 # Главное окно (QMainWindow)
-│   ├── gui_improvements.py    # 15 улучшений интерфейса (A-O)
-│   ├── settings_dialog.py     # Единое окно настроек (10 вкладок)
-│   ├── config_generator.py    # Генератор config.yaml
-│   ├── async_config_generator.py  # Асинхронный генератор (10-30x)
-│   ├── auto_updater.py        # Авто-обновление по коммитам
-│   ├── pipeline.py            # Оркестратор
+│   ├── gui.py                 # Main window (QMainWindow)
+│   ├── gui_improvements.py    # 15 UI improvements (A-O)
+│   ├── settings_dialog.py     # Settings dialog (10 tabs)
+│   ├── config_generator.py    # Config generator
+│   ├── async_config_generator.py  # Async generator (10-30x)
+│   ├── auto_updater.py        # Auto-update via commits
+│   ├── auto_discover.py       # Auto source discovery
+│   ├── pipeline.py            # Orchestrator
 │   └── ...
-├── tests/                     # 166+ unit-тестов
+├── tests/                     # 194+ unit tests
 ├── CorpusBuilder.spec         # PyInstaller one-dir
-├── build.bat / build.sh       # Скрипты сборки
+├── build.bat / build.sh       # Build scripts
 └── README.md
 ```
 
-### Тесты
+### Tests
 
 ```bash
-pytest tests/ -v                          # все тесты
-pytest tests/test_quality_filters.py -v   # конкретный модуль
-pytest tests/ -q --ignore=tests/test_vcr_cassettes.py  # без сетевых
+pytest tests/ -v                          # all tests
+pytest tests/test_quality_filters.py -v   # specific module
+pytest tests/ -q --ignore=tests/test_vcr_cassettes.py  # without network
 ```
 
-### Вклад в проект
+### Contributing
 
-См. [CONTRIBUTING.md](CONTRIBUTING.md)
+See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
-## 📄 Лицензия
+## 📄 License
 
 **CorpusBuilder License — Non-Commercial Use**
 
-- ✅ **Свободное использование** для личных, образовательных, академических и research целей
-- ✅ Модификация и распространение (с сохранением лицензии)
-- ❌ **Коммерческое использование запрещено** без отдельного разрешения
-- 💼 Для коммерческого использования — [свяжитесь с автором](https://github.com/draco74-glitch/corpus_builder)
+- ✅ **Free to use** for personal, educational, academic, and research purposes
+- ✅ Modification and redistribution (with same license)
+- ❌ **Commercial use prohibited** without permission
+- 💼 For commercial use — [contact the author](https://github.com/draco74-glitch/corpus_builder)
 
-Полный текст лицензии: [LICENSE](LICENSE)
+Full license text: [LICENSE](LICENSE)
 
 ---
 
 <div align="center">
 
-**[⬆ Наверх](#-оглавление)**
+**[⬆ Back to top](#-table-of-contents)**
 
-Сделано с ❤️ для open-source сообщества
+Made with ❤️ for the open-source community
 
 </div>

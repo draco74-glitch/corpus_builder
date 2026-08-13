@@ -22,10 +22,11 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar, QTextEdit,
-    QTableWidget, QTableWidgetItem, QTabWidget, QCheckBox, QSpinBox, QComboBox,
-    QMessageBox, QSystemTrayIcon, QMenu, QGroupBox, QSplitter, QHeaderView,
-    QStatusBar, QStyle, QFrame, QToolButton, QSizePolicy, QDialog
+    QFormLayout, QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar,
+    QTextEdit, QTableWidget, QTableWidgetItem, QTabWidget, QCheckBox, QSpinBox,
+    QComboBox, QMessageBox, QSystemTrayIcon, QMenu, QGroupBox, QSplitter,
+    QHeaderView, QStatusBar, QStyle, QFrame, QToolButton, QSizePolicy, QDialog,
+    QListWidget, QListWidgetItem, QScrollArea, QButtonGroup, QRadioButton, QSlider
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -139,7 +140,7 @@ class MainWindow(QMainWindow):
         self.worker: CrawlWorker | None = None
         self.recent_records: deque[dict] = deque(maxlen=20)
 
-        self.setWindowTitle("Corpus Builder — сбор корпуса для LLM")
+        self.setWindowTitle(tr("window_title"))
         self.resize(1280, 820)
         self._apply_dark_theme()
 
@@ -149,9 +150,9 @@ class MainWindow(QMainWindow):
             self.tray = QSystemTrayIcon(self.style().standardIcon(QStyle.SP_DriveHDIcon), self)
             self.tray.setToolTip("Corpus Builder")
             menu = QMenu()
-            act_show = menu.addAction("Показать окно")
+            act_show = menu.addAction(tr("tray_show"))
             act_show.triggered.connect(self.showNormal)
-            act_quit = menu.addAction("Выход")
+            act_quit = menu.addAction(tr("tray_quit"))
             act_quit.triggered.connect(self._quit_app)
             self.tray.setContextMenu(menu)
             self.tray.activated.connect(self._on_tray_activated)
@@ -183,7 +184,7 @@ class MainWindow(QMainWindow):
             first_run_file.touch()
 
         # Язык интерфейса (Улучшение N)
-        set_language(self.app_settings.gui.theme if hasattr(self.app_settings.gui, 'language') else 'ru')
+        set_language(getattr(self.app_settings.gui, 'language', 'ru'))
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._refresh_status)
@@ -237,179 +238,144 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(qss)
 
     def _build_menu(self) -> None:
-        """Создать меню: Файл, Настройки, Вид, Справка."""
+        """Create menus with i18n support."""
         menubar = self.menuBar()
+        self._menus = {}
+        self._menu_actions = {}
 
-        # === Меню Файл ===
-        file_menu = menubar.addMenu("Файл")
+        def _m(key, title):
+            menu = menubar.addMenu(title)
+            self._menus[key] = menu
+            return menu
 
-        act_open_config = QAction("Открыть config.yaml...", self)
-        act_open_config.setShortcut(QKeySequence("Ctrl+O"))
-        act_open_config.triggered.connect(self._menu_open_config)
-        file_menu.addAction(act_open_config)
+        def _a(menu, key, text, handler=None, shortcut=None):
+            act = QAction(text, self)
+            if shortcut:
+                act.setShortcut(QKeySequence(shortcut))
+            if handler:
+                act.triggered.connect(handler)
+            menu.addAction(act)
+            self._menu_actions[key] = act
+            return act
 
-        act_open_output = QAction("Открыть папку корпуса", self)
-        act_open_output.triggered.connect(self._open_output_folder)
-        file_menu.addAction(act_open_output)
-
-        # Недавние файлы (Улучшение H)
-        self.recent_menu = file_menu.addMenu("Недавние config.yaml")
+        # File
+        file_menu = _m("file", tr("menu_file_title"))
+        _a(file_menu, "menu_open_config", tr("menu_open_config"), self._menu_open_config, "Ctrl+O")
+        self.recent_menu = file_menu.addMenu(tr("menu_recent"))
         file_menu.addSeparator()
-
-        act_export_hf = QAction("Экспорт в HuggingFace...", self)
-        act_export_hf.triggered.connect(self._on_export_hf)
-        file_menu.addAction(act_export_hf)
-
-        act_export_parquet = QAction("Экспорт в Parquet...", self)
-        act_export_parquet.triggered.connect(self._on_export_parquet)
-        file_menu.addAction(act_export_parquet)
-
+        _a(file_menu, "menu_export_hf", tr("menu_export_hf"), self._on_export_hf)
+        _a(file_menu, "menu_export_parquet", tr("menu_export_parquet"), self._on_export_parquet)
         file_menu.addSeparator()
+        _a(file_menu, "menu_quit", tr("menu_quit"), self._quit_app, "Ctrl+Q")
 
-        act_quit = QAction("Выход", self)
-        act_quit.setShortcut(QKeySequence("Ctrl+Q"))
-        act_quit.triggered.connect(self._quit_app)
-        file_menu.addAction(act_quit)
-
-        # === Меню Настройки ===
-        settings_menu = menubar.addMenu("Настройки")
-
-        act_settings = QAction("⚙  Все настройки...", self)
-        act_settings.setShortcut(QKeySequence("Ctrl+,"))
-        act_settings.triggered.connect(self._open_settings)
-        settings_menu.addAction(act_settings)
-
+        # Settings
+        settings_menu = _m("settings", tr("menu_settings_title"))
+        _a(settings_menu, "menu_all_settings", tr("menu_all_settings"), self._open_settings, "Ctrl+,")
         settings_menu.addSeparator()
-
-        act_export_settings = QAction("📤  Экспорт настроек...", self)
-        act_export_settings.triggered.connect(self._export_settings)
-        settings_menu.addAction(act_export_settings)
-
-        act_import_settings = QAction("📥  Импорт настроек...", self)
-        act_import_settings.triggered.connect(self._import_settings)
-        settings_menu.addAction(act_import_settings)
-
+        _a(settings_menu, "menu_export_settings", tr("menu_export_settings"), self._export_settings)
+        _a(settings_menu, "menu_import_settings", tr("menu_import_settings"), self._import_settings)
         settings_menu.addSeparator()
+        _a(settings_menu, "menu_reset_settings", tr("menu_reset_settings"), self._reset_settings)
 
-        act_reset_settings = QAction("↺  Сбросить к defaults", self)
-        act_reset_settings.triggered.connect(self._reset_settings)
-        settings_menu.addAction(act_reset_settings)
-
-        # === Меню Вид ===
-        view_menu = menubar.addMenu("Вид")
-
-        # Тема (Улучшения F + O)
-        theme_menu = view_menu.addMenu("Тема")
+        # View
+        view_menu = _m("view", tr("menu_view_title"))
+        self._theme_menu = view_menu.addMenu(tr("menu_theme_title"))
         self.theme_group = {}
-        for theme_name in ["dark", "light", "material_blue", "material_green", "material_purple"]:
-            label = {"dark": "Тёмная", "light": "Светлая",
-                     "material_blue": "Material Blue", "material_green": "Material Green",
-                     "material_purple": "Material Purple"}[theme_name]
-            act = theme_menu.addAction(label)
+        self._theme_keys = ["theme_dark", "theme_light", "theme_material_blue",
+                           "theme_material_green", "theme_material_purple"]
+        for theme_name, tkey in zip(
+            ["dark", "light", "material_blue", "material_green", "material_purple"],
+            self._theme_keys
+        ):
+            act = self._theme_menu.addAction(tr(tkey))
             act.setCheckable(True)
             act.setChecked(self.app_settings.gui.theme == theme_name)
             act.triggered.connect(lambda checked, t=theme_name: self._change_theme(t))
             self.theme_group[theme_name] = act
+            self._menu_actions[tkey] = act
 
         view_menu.addSeparator()
+        _a(view_menu, "menu_toggle_log", tr("menu_toggle_log"), self._toggle_log_visibility, "Ctrl+L")
+        _a(view_menu, "menu_search_log", tr("menu_search_log"), self._toggle_log_search, "Ctrl+F")
 
-        act_toggle_log = QAction("Показать/скрыть лог", self)
-        act_toggle_log.setShortcut(QKeySequence("Ctrl+L"))
-        act_toggle_log.triggered.connect(self._toggle_log_visibility)
-        view_menu.addAction(act_toggle_log)
-
-        act_search_log = QAction("🔍  Поиск по логу", self)
-        act_search_log.setShortcut(QKeySequence("Ctrl+F"))
-        act_search_log.triggered.connect(self._toggle_log_search)
-        view_menu.addAction(act_search_log)
-
-        # === Меню Действия ===
-        actions_menu = menubar.addMenu("Действия")
-
-        act_crawl = QAction("▶  Запустить краулинг", self)
-        act_crawl.setShortcut(QKeySequence("Ctrl+R"))
-        act_crawl.triggered.connect(self._on_start_crawl)
-        actions_menu.addAction(act_crawl)
-
-        act_postprocess = QAction("⚙  Пост-обработка", self)
-        act_postprocess.triggered.connect(self._on_postprocess)
-        actions_menu.addAction(act_postprocess)
-
-        act_stop = QAction("⏹  Остановить", self)
-        act_stop.triggered.connect(self._on_stop)
-        actions_menu.addAction(act_stop)
-
+        # Actions
+        actions_menu = _m("actions", tr("menu_actions_title"))
+        _a(actions_menu, "menu_crawl", tr("menu_crawl"), self._on_start_crawl, "Ctrl+R")
+        _a(actions_menu, "menu_postprocess", tr("menu_postprocess"), self._on_postprocess)
+        _a(actions_menu, "menu_stop", tr("menu_stop"), self._on_stop)
         actions_menu.addSeparator()
+        _a(actions_menu, "menu_generate_config", tr("menu_generate_config"), self._on_open_config_generator)
+        _a(actions_menu, "menu_auto_discover", tr("menu_auto_discover"), self._on_auto_discover, "Ctrl+Shift+A")
+        _a(actions_menu, "menu_merge_config", tr("menu_merge_config"), self._on_merge_config, "Ctrl+Shift+M")
 
-        act_generate_config = QAction("✨  Создать config.yaml...", self)
-        act_generate_config.triggered.connect(self._on_open_config_generator)
-        actions_menu.addAction(act_generate_config)
+        # Help
+        help_menu = _m("help", tr("menu_help_title"))
+        _a(help_menu, "menu_check_update", tr("menu_check_update"), self._check_for_updates_manual, "Ctrl+U")
+        _a(help_menu, "menu_about", tr("menu_about"), self._show_about)
+        _a(help_menu, "menu_docs", tr("menu_docs"), self._open_documentation)
+        _a(help_menu, "menu_stats", tr("menu_stats"), self._refresh_stats_charts, "Ctrl+S")
 
-        act_auto_discover = QAction("🔄  Авто-поиск источников...", self)
-        act_auto_discover.setShortcut(QKeySequence("Ctrl+Shift+A"))
-        act_auto_discover.triggered.connect(self._on_auto_discover)
-        actions_menu.addAction(act_auto_discover)
-
-        act_merge_config = QAction("🔗  Объединить config.yaml...", self)
-        act_merge_config.setShortcut(QKeySequence("Ctrl+Shift+M"))
-        act_merge_config.triggered.connect(self._on_merge_config)
-        actions_menu.addAction(act_merge_config)
-
-        # === Меню Справка ===
-        help_menu = menubar.addMenu("Справка")
-
-        act_check_update = QAction("🔄  Проверить обновления", self)
-        act_check_update.setShortcut(QKeySequence("Ctrl+U"))
-        act_check_update.triggered.connect(self._check_for_updates_manual)
-        help_menu.addAction(act_check_update)
-
-        act_about = QAction("О программе", self)
-        act_about.triggered.connect(self._show_about)
-        help_menu.addAction(act_about)
-
-        act_help = QAction("Документация", self)
-        act_help.triggered.connect(self._open_documentation)
-        help_menu.addAction(act_help)
-
-        act_stats = QAction("Статистика корпуса", self)
-        act_stats.setShortcut(QKeySequence("Ctrl+S"))
-        act_stats.triggered.connect(self._refresh_stats_charts)
-        help_menu.addAction(act_stats)
-
-        # Новые инструменты (Улучшения J, K, L, N)
-        tools_menu = menubar.addMenu("Инструменты")
-
-        act_diff = QAction("📊  Сравнить корпуса...", self)
-        act_diff.triggered.connect(self._show_diff_dialog)
-        tools_menu.addAction(act_diff)
-
-        act_yaml = QAction("📝  Редактор YAML...", self)
-        act_yaml.setShortcut(QKeySequence("Ctrl+E"))
-        act_yaml.triggered.connect(self._show_yaml_editor)
-        tools_menu.addAction(act_yaml)
-
-        act_dashboard = QAction("📈  Dashboard...", self)
-        act_dashboard.setShortcut(QKeySequence("Ctrl+D"))
-        act_dashboard.triggered.connect(self._show_dashboard)
-        tools_menu.addAction(act_dashboard)
-
+        # Tools
+        tools_menu = _m("tools", tr("menu_tools_title"))
+        _a(tools_menu, "menu_diff", tr("menu_diff"), self._show_diff_dialog)
+        _a(tools_menu, "menu_yaml", tr("menu_yaml"), self._show_yaml_editor, "Ctrl+E")
+        _a(tools_menu, "menu_dashboard", tr("menu_dashboard"), self._show_dashboard, "Ctrl+D")
         tools_menu.addSeparator()
 
-        # Язык (Улучшение N)
-        lang_menu = tools_menu.addMenu("🌐  Язык / Language")
-        act_ru = lang_menu.addAction("Русский")
-        act_ru.setCheckable(True)
-        act_ru.setChecked(get_language() == "ru")
-        act_ru.triggered.connect(lambda: set_language("ru"))
-        act_en = lang_menu.addAction("English")
-        act_en.setCheckable(True)
-        act_en.setChecked(get_language() == "en")
-        act_en.triggered.connect(lambda: set_language("en"))
+        self._lang_menu = tools_menu.addMenu(tr("menu_language"))
+        self._lang_act_ru = self._lang_menu.addAction(tr("menu_lang_ru"))
+        self._lang_act_ru.setCheckable(True)
+        self._lang_act_ru.setChecked(get_language() == "ru")
+        self._lang_act_ru.triggered.connect(lambda: self._change_language("ru"))
+        self._lang_act_en = self._lang_menu.addAction(tr("menu_lang_en"))
+        self._lang_act_en.setCheckable(True)
+        self._lang_act_en.setChecked(get_language() == "en")
+        self._lang_act_en.triggered.connect(lambda: self._change_language("en"))
+
+    def _change_language(self, lang: str) -> None:
+        """Switch language and rebuild entire UI for full translation."""
+        set_language(lang)
+        self.app_settings.gui.language = lang
+        self.app_settings.save()
+
+        # Clear old menu bar
+        menubar = self.menuBar()
+        menubar.clear()
+
+        # Clear old central widget
+        old_widget = self.centralWidget()
+
+        # Rebuild everything fresh
+        self._build_ui()
+        self._build_menu()
+        self._connect_signals()
+
+        # Delete old widget after new one is set
+        if old_widget:
+            old_widget.deleteLater()
+
+        # Re-apply theme + styles
+        self._apply_dark_theme()
+        self._apply_theme(self.app_settings.gui.theme)
+
+        # Restore state
+        if self.config_path:
+            self.config_edit.setText(self.config_path)
+        if self.output_dir:
+            self.output_edit.setText(self.output_dir)
+        self.chk_resume.setChecked(True)
+
+        # Update recent menu
+        self._update_recent_menu()
+
+        # Update language checkboxes
+        self._lang_act_ru.setChecked(lang == "ru")
+        self._lang_act_en.setChecked(lang == "en")
 
     def _menu_open_config(self) -> None:
         """Открыть config.yaml через меню Файл."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Открыть config.yaml", "", "YAML (*.yaml *.yml);;Все файлы (*)"
+            self, tr("menu_open_config"), "", "YAML (*.yaml *.yml);;All files (*)"
         )
         if path:
             self.config_edit.setText(path)
@@ -433,7 +399,7 @@ class MainWindow(QMainWindow):
         """Экспорт настроек в JSON."""
         from pathlib import Path
         path, _ = QFileDialog.getSaveFileName(
-            self, "Экспорт настроек", "corpus_builder_settings.json", "JSON (*.json)"
+            self, tr("menu_export_settings"), "corpus_builder_settings.json", "JSON (*.json)"
         )
         if not path:
             return
@@ -644,7 +610,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Ошибка проверки", str(e))
         finally:
-            self.status.showMessage("Готов")
+            self.status.showMessage(tr("status_ready"))
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -654,60 +620,62 @@ class MainWindow(QMainWindow):
         outer.setSpacing(8)
 
         # --- Конфигурация ---
-        cfg_group = QGroupBox("1. Конфигурация")
+        cfg_group = QGroupBox(tr("group_config"))
+        self.cfg_group = cfg_group
         cfg_layout = QGridLayout(cfg_group)
         cfg_layout.setHorizontalSpacing(8)
         cfg_layout.setVerticalSpacing(6)
 
         # config.yaml
-        cfg_layout.addWidget(QLabel("config.yaml:"), 0, 0)
+        cfg_layout.addWidget(QLabel(tr("label_config")), 0, 0)
         self.config_edit = QLineEdit()
         self.config_edit.setPlaceholderText("Выберите файл конфигурации...")
         cfg_layout.addWidget(self.config_edit, 0, 1)
-        btn_browse_config = QPushButton("Обзор...")
+        btn_browse_config = QPushButton(tr("btn_browse"))
         btn_browse_config.setProperty("secondary", True)
         btn_browse_config.clicked.connect(self._browse_config)
         cfg_layout.addWidget(btn_browse_config, 0, 2)
 
         # output dir
-        cfg_layout.addWidget(QLabel("Папка корпуса:"), 1, 0)
+        cfg_layout.addWidget(QLabel(tr("label_output")), 1, 0)
         self.output_edit = QLineEdit()
         self.output_edit.setPlaceholderText("Куда сохранять корпус (перекрывает config.yaml)")
         cfg_layout.addWidget(self.output_edit, 1, 1)
-        btn_browse_output = QPushButton("Обзор...")
+        btn_browse_output = QPushButton(tr("btn_browse"))
         btn_browse_output.setProperty("secondary", True)
         btn_browse_output.clicked.connect(self._browse_output)
         cfg_layout.addWidget(btn_browse_output, 1, 2)
 
-        btn_open_folder = QPushButton("Открыть папку")
+        btn_open_folder = QPushButton(tr("btn_open_folder"))
         btn_open_folder.setProperty("secondary", True)
         btn_open_folder.clicked.connect(self._open_output_folder)
         cfg_layout.addWidget(btn_open_folder, 2, 2)
 
         # Опции запуска
         opts_row = QHBoxLayout()
-        self.chk_resume = QCheckBox("Продолжить (resume)")
+        self.chk_resume = QCheckBox(tr("chk_resume"))
         self.chk_resume.setChecked(True)
         self.chk_resume.setToolTip("Не начинать заново, продолжить с чекпойнта")
-        self.chk_retry = QCheckBox("Повторить упавшие")
+        self.chk_retry = QCheckBox(tr("chk_retry"))
         self.chk_retry.setToolTip("Повторно обработать URL, помеченные как ошибки")
         opts_row.addWidget(self.chk_resume)
         opts_row.addWidget(self.chk_retry)
         opts_row.addStretch()
-        cfg_layout.addWidget(QLabel("Опции:"), 2, 0)
+        cfg_layout.addWidget(QLabel(tr("label_options")), 2, 0)
         cfg_layout.addLayout(opts_row, 2, 1)
 
         outer.addWidget(cfg_group)
 
         # --- Действия ---
-        actions_group = QGroupBox("2. Действия")
+        actions_group = QGroupBox(tr("group_actions"))
+        self.actions_group = actions_group
         actions_layout = QHBoxLayout(actions_group)
-        self.btn_merge_config = QPushButton("🔗  Объединить config")
+        self.btn_merge_config = QPushButton(tr("btn_merge_config"))
         self.btn_merge_config.setToolTip("Объединить несколько config.yaml в один с удалением дубликатов")
         self.btn_merge_config.clicked.connect(self._on_merge_config)
         actions_layout.addWidget(self.btn_merge_config)
 
-        self.btn_auto_discover = QPushButton("🔄  Авто-поиск источников")
+        self.btn_auto_discover = QPushButton(tr("btn_auto_discover"))
         self.btn_auto_discover.setToolTip(
             "Автоматический поиск источников на GitHub, StackExchange и Wikipedia\n"
             "по заданным темам/категориям"
@@ -715,26 +683,26 @@ class MainWindow(QMainWindow):
         self.btn_auto_discover.clicked.connect(self._on_auto_discover)
         actions_layout.addWidget(self.btn_auto_discover)
 
-        self.btn_generate_config = QPushButton("✨  Создать config.yaml")
+        self.btn_generate_config = QPushButton(tr("btn_generate_config"))
         self.btn_generate_config.setProperty("secondary", True)
         self.btn_generate_config.setToolTip(
             "Открыть мастер генерации config.yaml из Excel/CSV, GitHub topics или StackExchange tags"
         )
         self.btn_generate_config.clicked.connect(self._on_open_config_generator)
-        self.btn_crawl = QPushButton("▶  Запустить краулинг")
+        self.btn_crawl = QPushButton(tr("btn_crawl"))
         self.btn_crawl.setStyleSheet(f"font-weight: bold; min-height: 28px;")
         self.btn_crawl.clicked.connect(self._on_start_crawl)
-        self.btn_postprocess = QPushButton("⚙  Пост-обработка")
+        self.btn_postprocess = QPushButton(tr("btn_postprocess"))
         self.btn_postprocess.setProperty("secondary", True)
         self.btn_postprocess.clicked.connect(self._on_postprocess)
-        self.btn_stop = QPushButton("⏹  Остановить")
+        self.btn_stop = QPushButton(tr("btn_stop"))
         self.btn_stop.setProperty("danger", True)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
-        self.btn_export_hf = QPushButton("⬇  Экспорт HF")
+        self.btn_export_hf = QPushButton(tr("btn_export_hf"))
         self.btn_export_hf.setProperty("secondary", True)
         self.btn_export_hf.clicked.connect(self._on_export_hf)
-        self.btn_export_parquet = QPushButton("⬇  Экспорт Parquet")
+        self.btn_export_parquet = QPushButton(tr("btn_export_parquet"))
         self.btn_export_parquet.setProperty("secondary", True)
         self.btn_export_parquet.clicked.connect(self._on_export_parquet)
         actions_layout.addWidget(self.btn_generate_config)
@@ -742,19 +710,20 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self.btn_postprocess)
         actions_layout.addWidget(self.btn_stop)
         actions_layout.addStretch()
-        actions_layout.addWidget(QLabel("Экспорт:"))
+        actions_layout.addWidget(QLabel(tr("label_export")))
         actions_layout.addWidget(self.btn_export_hf)
         actions_layout.addWidget(self.btn_export_parquet)
         outer.addWidget(actions_group)
 
         # --- Прогресс ---
-        prog_group = QGroupBox("3. Прогресс")
+        prog_group = QGroupBox(tr("group_progress"))
+        self.prog_group = prog_group
         prog_layout = QVBoxLayout(prog_group)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         prog_layout.addWidget(self.progress_bar)
-        self.progress_label = QLabel("Готов к запуску")
+        self.progress_label = QLabel(tr("progress_ready"))
         self.progress_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
         prog_layout.addWidget(self.progress_label)
         outer.addWidget(prog_group)
@@ -773,7 +742,7 @@ class MainWindow(QMainWindow):
         self.log_view.setLineWrapMode(QTextEdit.NoWrap)
         log_layout.addWidget(self.log_view)
         log_buttons = QHBoxLayout()
-        btn_clear_log = QPushButton("Очистить лог")
+        btn_clear_log = QPushButton(tr("btn_clear_log"))
         btn_clear_log.setProperty("secondary", True)
         btn_clear_log.clicked.connect(self.log_view.clear)
         log_buttons.addStretch()
@@ -808,7 +777,7 @@ class MainWindow(QMainWindow):
         self._build_stats_charts(stats_layout)
 
         # Обновить кнопку
-        btn_refresh_stats = QPushButton("⟳ Обновить статистику")
+        btn_refresh_stats = QPushButton(tr("btn_refresh_stats"))
         btn_refresh_stats.setProperty("secondary", True)
         btn_refresh_stats.clicked.connect(self._refresh_stats_charts)
         stats_layout.addWidget(btn_refresh_stats)
@@ -820,9 +789,9 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.stats_text)
 
         tabs = QTabWidget()
-        tabs.addTab(log_tab, "Лог")
-        tabs.addTab(records_tab, "Последние записи")
-        tabs.addTab(stats_tab, "Статистика")
+        tabs.addTab(log_tab, tr("tab_log"))
+        tabs.addTab(records_tab, tr("tab_records"))
+        tabs.addTab(stats_tab, tr("tab_stats"))
         splitter.addWidget(tabs)
         splitter.setStretchFactor(0, 1)
         outer.addWidget(splitter, stretch=1)
@@ -830,7 +799,7 @@ class MainWindow(QMainWindow):
         # Status bar
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.status.showMessage("Готов")
+        self.status.showMessage(tr("status_ready"))
 
     def _build_stats_charts(self, parent_layout: QVBoxLayout) -> None:
         # 2x2 grid: типы, языки, длины, качество
@@ -994,14 +963,14 @@ class MainWindow(QMainWindow):
         """Открыть мастер создания config.yaml из Excel/GitHub/StackExchange."""
         if self.worker and self.worker.isRunning():
             QMessageBox.warning(self, "Занято",
-                "Дождитесь завершения краулинга перед открытием мастера.")
+                tr("busy_crawl"))
             return
         try:
             # Передаём текущую папку вывода как начальную
             default_dir = self.output_edit.text().strip() or os.path.expanduser("~")
             dialog = ConfigGeneratorDialog(self, default_output_dir=default_dir)
             if dialog.exec() == QDialog.Accepted:
-                self._log("INFO", "Мастер создания config.yaml завершён")
+                self._log("INFO", tr("config_generator_done"))
         except Exception as e:
             import traceback
             error_msg = traceback.format_exc()
@@ -1076,7 +1045,7 @@ class MainWindow(QMainWindow):
         try:
             stats = export_huggingface(corpus_file, Path(target) / "corpus_hf_dataset")
             self._log("INFO", f"HF экспорт: {stats['records']} записей → {stats['path']}")
-            QMessageBox.information(self, "Экспорт завершён",
+            QMessageBox.information(self, tr("info"),
                                      f"Записей: {stats['records']}\nПапка: {stats['path']}")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка экспорта", str(e))
@@ -1176,9 +1145,9 @@ class MainWindow(QMainWindow):
         self.btn_export_hf.setEnabled(not running)
         self.btn_export_parquet.setEnabled(not running)
         if running:
-            self.status.showMessage("Работаю...")
+            self.status.showMessage(tr("status_working"))
         else:
-            self.status.showMessage("Готов")
+            self.status.showMessage(tr("status_ready"))
 
     def _log(self, level: str, msg: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
@@ -1426,7 +1395,8 @@ class MainWindow(QMainWindow):
             self.recent_menu.addAction(action)
         if recent:
             self.recent_menu.addSeparator()
-            act_clear = QAction("Очистить список", self)
+            act_clear = QAction(tr("menu_recent_clear"), self)
+            act_clear.setToolTip(tr("menu_recent_clear"))
             act_clear.triggered.connect(self.recent_configs.clear)
             self.recent_menu.addAction(act_clear)
 

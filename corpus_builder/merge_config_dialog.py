@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from .logging_setup import get_logger
+from .gui_improvements import tr
 
 log = get_logger(__name__)
 
@@ -38,7 +39,7 @@ class MergeConfigDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🔗 Объединить config.yaml")
+        self.setWindowTitle(tr("mc_title"))
         self.resize(800, 600)
         self._files: list[str] = []
         self._merged_sources: list[dict] = []
@@ -52,7 +53,7 @@ class MergeConfigDialog(QDialog):
         outer.setSpacing(8)
 
         # Заголовок
-        title = QLabel("🔗 Объединение config.yaml")
+        title = QLabel(tr("mc_title"))
         title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {ACCENT};")
         outer.addWidget(title)
 
@@ -66,7 +67,7 @@ class MergeConfigDialog(QDialog):
         outer.addWidget(subtitle)
 
         # Список файлов
-        files_group = QGroupBox("📎 Файлы для объединения")
+        files_group = QGroupBox(tr("mc_files"))
         files_layout = QVBoxLayout(files_group)
 
         self.files_list = QListWidget()
@@ -75,17 +76,17 @@ class MergeConfigDialog(QDialog):
         files_layout.addWidget(self.files_list)
 
         btn_row = QHBoxLayout()
-        btn_add = QPushButton("➕  Добавить файлы...")
+        btn_add = QPushButton(tr("mc_add_files"))
         btn_add.setProperty("secondary", True)
         btn_add.clicked.connect(self._add_files)
         btn_row.addWidget(btn_add)
 
-        btn_remove = QPushButton("➖  Удалить выбранные")
+        btn_remove = QPushButton(tr("mc_remove"))
         btn_remove.setProperty("secondary", True)
         btn_remove.clicked.connect(self._remove_selected)
         btn_row.addWidget(btn_remove)
 
-        btn_clear = QPushButton("🗑  Очистить список")
+        btn_clear = QPushButton(tr("mc_clear"))
         btn_clear.setProperty("secondary", True)
         btn_clear.clicked.connect(self._clear_files)
         btn_row.addWidget(btn_clear)
@@ -94,15 +95,15 @@ class MergeConfigDialog(QDialog):
         outer.addWidget(files_group)
 
         # Опции
-        opts_group = QGroupBox("⚙ Опции дедупликации")
+        opts_group = QGroupBox(tr("mc_options"))
         opts_layout = QHBoxLayout(opts_group)
 
-        self.chk_exact = QCheckBox("Точное совпадение URL")
+        self.chk_exact = QCheckBox(tr("mc_exact"))
         self.chk_exact.setChecked(True)
         self.chk_exact.setToolTip("Удалять дубликаты с точным совпадением URL")
         opts_layout.addWidget(self.chk_exact)
 
-        self.chk_canonical = QCheckBox("Канонизированный URL")
+        self.chk_canonical = QCheckBox(tr("mc_canonical"))
         self.chk_canonical.setChecked(True)
         self.chk_canonical.setToolTip(
             "Сравнивать URL после канонизации:\\n"
@@ -113,7 +114,7 @@ class MergeConfigDialog(QDialog):
         )
         opts_layout.addWidget(self.chk_canonical)
 
-        self.chk_merge_cats = QCheckBox("Сливать категории из дубликатов")
+        self.chk_merge_cats = QCheckBox(tr("mc_merge_cats"))
         self.chk_merge_cats.setChecked(True)
         self.chk_merge_cats.setToolTip(
             "Если URL повторяется — категории из дубликата\\n"
@@ -124,7 +125,7 @@ class MergeConfigDialog(QDialog):
         outer.addWidget(opts_group)
 
         # Кнопка объединения
-        self.btn_merge = QPushButton("🔗  Объединить")
+        self.btn_merge = QPushButton(tr("mc_merge"))
         self.btn_merge.setStyleSheet(
             f"background-color: {ACCENT}; color: white; font-weight: bold; "
             f"padding: 8px 20px; min-height: 28px;"
@@ -133,7 +134,7 @@ class MergeConfigDialog(QDialog):
         outer.addWidget(self.btn_merge)
 
         # Результат
-        result_group = QGroupBox("📊 Результат")
+        result_group = QGroupBox(tr("mc_result"))
         result_layout = QVBoxLayout(result_group)
 
         self.stats_label = QLabel("Объединение ещё не выполнено")
@@ -141,7 +142,7 @@ class MergeConfigDialog(QDialog):
         result_layout.addWidget(self.stats_label)
 
         # Таблица с дубликатами
-        result_layout.addWidget(QLabel("Статистика по файлам:"))
+        result_layout.addWidget(QLabel(tr("mc_stats_by_file")))
         self.files_table = QTableWidget(0, 3)
         self.files_table.setHorizontalHeaderLabels(["Файл", "Источников", "Уникальных"])
         header = self.files_table.horizontalHeader()
@@ -158,7 +159,7 @@ class MergeConfigDialog(QDialog):
         save_row = QHBoxLayout()
         save_row.addStretch()
 
-        self.btn_save = QPushButton("💾  Сохранить объединённый config.yaml")
+        self.btn_save = QPushButton(tr("mc_save"))
         self.btn_save.setEnabled(False)
         self.btn_save.clicked.connect(self._on_save)
         save_row.addWidget(self.btn_save)
