@@ -35,6 +35,7 @@ from .app_settings import AppSettings
 from .settings_dialog import SettingsDialog
 from .auto_updater import AutoUpdater, CommitUpdater
 from .auto_discover import AutoDiscover
+from .startup_dialog import StartupDialog
 from .merge_config_dialog import MergeConfigDialog
 from .gui_improvements import (
     ConfigDropArea, RecordsTableContextMenu, LogSearchBar,
@@ -1455,13 +1456,21 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
-    """Точка входа GUI. Используется в pyinstaller --windowed."""
+    """Точка входа GUI. Показывает startup dialog, затем открывает нужное окно."""
     app = QApplication(sys.argv)
     app.setApplicationName("Corpus Builder")
     app.setOrganizationName("draco74-glitch")
     app.setQuitOnLastWindowClosed(True)
 
-    window = MainWindow()
+    # Show startup dialog — select mode
+    mode = StartupDialog.ask_mode()
+
+    if mode == StartupDialog.MODE_FINETUNING:
+        from .finetune_window import FinetuneWindow
+        window = FinetuneWindow()
+    else:
+        window = MainWindow()
+
     window.show()
     return app.exec()
 

@@ -112,6 +112,18 @@ class PipelineConfig(BaseModel):
     per_url_timeout_minutes: int = 10  # если URL зависает — пропустить после N минут
 
 
+class FineTuneConfig(BaseModel):
+    """Настройки для fine-tuning режима."""
+    max_per_type: int = 1000
+    min_prompt_chars: int = 20
+    max_prompt_chars: int = 8000
+    min_completion_chars: int = 20
+    max_completion_chars: int = 16000
+    balance_classes: bool = True
+    remove_pii: bool = True
+    formats: list[str] = Field(default_factory=lambda: ["jsonl", "chatml", "alpaca", "sharegpt"])
+
+
 class AppConfig(BaseModel):
     sources: list[SourceItem]
     output: OutputConfig
@@ -119,6 +131,7 @@ class AppConfig(BaseModel):
     quality: QualityConfig = Field(default_factory=QualityConfig)
     dedup: DedupConfig = Field(default_factory=DedupConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    finetune: FineTuneConfig = Field(default_factory=FineTuneConfig)
 
 
 # ---------- Запись корпуса ----------
