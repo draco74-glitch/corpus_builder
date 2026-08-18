@@ -93,11 +93,28 @@ class FormatConverter:
 
     @staticmethod
     def _to_chatml(prompt: str, completion: str, pair: dict) -> str:
-        """ChatML format: text with special tokens."""
-        text = (
-            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-            f"<|im_start|>assistant\n{completion}<|im_end|>"
-        )
+        """ChatML format: text with special tokens.
+
+        If pair has a 'conversation' field (multi-turn), build a proper
+        multi-turn ChatML text with alternating user/assistant turns.
+        Otherwise fall back to single-turn prompt/completion.
+        """
+        conv = pair.get("conversation")
+        if conv and isinstance(conv, list) and len(conv) >= 2:
+            # Build multi-turn ChatML from the conversation field.
+            parts = []
+            for turn in conv:
+                role = turn.get("role", "user")
+                value = turn.get("content", "")
+                if value:
+                    parts.append(f"<|im_start|>{role}\n{value}<|im_end|>")
+            text = "\n".join(parts)
+        else:
+            # Single-turn fallback
+            text = (
+                f"<|im_start|>user\n{prompt}<|im_end|>\n"
+                f"<|im_start|>assistant\n{completion}<|im_end|>"
+            )
         return json.dumps({"text": text, "task_type": pair.get("task_type", "")},
                          ensure_ascii=False)
 
@@ -123,15 +140,37 @@ class FormatConverter:
 
     @staticmethod
     def _to_sharegpt(prompt: str, completion: str, pair: dict) -> str:
-        """ShareGPT format: {"conversations": [{"from": "human", "value": "..."}, ...]}"""
-        record = {
-            "conversations": [
-                {"from": "human", "value": prompt},
-                {"from": "gpt", "value": completion},
-            ]
-        }
+        """ShareGPT format: {"conversations": [{"from": "human", "value": "..."}, ...]}
+
+        If pair has a 'conversation' field (multi-turn), use it to build
+        a proper multi-turn ShareGPT record. Otherwise fall back to
+        single-turn prompt/completion.
+        """
+        conv = pair.get("conversation")
+        if conv and isinstance(conv, list) and len(conv) >= 2:
+            # Build multi-turn conversations from the conversation field.
+            # Map roles: user -> human, assistant -> gpt.
+            role_map = {"user": "human", "assistant": "gpt", "system": "system"}
+            conversations = []
+            for turn in conv:
+                role = turn.get("role", "user")
+                from_role = role_map.get(role, "human")
+                value = turn.get("content", "")
+                if value:  # skip empty turns
+                    conversations.append({"from": from_role, "value": value})
+            record = {"conversations": conversations}
+        else:
+            # Single-turn fallback
+            record = {
+                "conversations": [
+                    {"from": "human", "value": prompt},
+                    {"from": "gpt", "value": completion},
+                ]
+            }
         if "source" in pair:
             record["source"] = pair["source"]
+        if "task_type" in pair:
+            record["task_type"] = pair["task_type"]
         return json.dumps(record, ensure_ascii=False)
 
     @staticmethod

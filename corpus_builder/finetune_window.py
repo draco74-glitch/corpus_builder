@@ -76,21 +76,68 @@ class FinetuneWorker(QThread):
     def run(self):
         try:
             from .postproc.instruction_generator import InstructionGenerator
-            from .postproc.quality_finetune import filter_pairs
+            from .postproc.quality_finetune import filter_pairs, dedup_pairs
             from .postproc.dataset_balancer import balance_by_type, get_balance_stats
             from .postproc.pii_filter import clean_pair
+            from .postproc.prompt_variations import set_seed as set_prompt_seed
+
+            # Seed the prompt variations RNG so that prompt selection is
+            # reproducible across runs. Without this, the global _rng in
+            # prompt_variations.py continues from wherever it left off,
+            # making datasets non-deterministic.
+            set_prompt_seed(42)
+
+            # Per-stage counts by task_type — for detecting type collapse.
+            # Each entry: stage_name → {task_type: count}
+            stage_counts: dict[str, dict[str, int]] = {}
+            warnings: list[str] = []
+
+            def count_by_type(pairs_list):
+                counts: dict[str, int] = {}
+                for p in pairs_list:
+                    t = p.get("task_type", "unknown")
+                    counts[t] = counts.get(t, 0) + 1
+                return counts
+
+            def log_stage(stage: str, pairs_list):
+                counts = count_by_type(pairs_list)
+                stage_counts[stage] = counts
+                log.info(f"[stage] {stage}: {len(pairs_list)} pairs, by_type={counts}")
+                # Check for type collapse vs the previous stage
+                prev_stages = [s for s in stage_counts if s != stage]
+                if prev_stages:
+                    prev = stage_counts[prev_stages[-1]]
+                    for t, prev_n in prev.items():
+                        curr_n = counts.get(t, 0)
+                        if prev_n > 0 and curr_n == 0:
+                            warnings.append(
+                                f"{stage}: task_type '{t}' disappeared "
+                                f"(had {prev_n} pairs in {prev_stages[-1]})"
+                            )
+                            log.warning(warnings[-1])
+                        elif prev_n > 0 and curr_n < prev_n * 0.1:
+                            warnings.append(
+                                f"{stage}: task_type '{t}' lost {prev_n - curr_n}/{prev_n} pairs "
+                                f"({100*(prev_n-curr_n)//prev_n}% drop)"
+                            )
+                            log.warning(warnings[-1])
 
             # Step 1: Generate instructions
-            self.progress.emit(1, 4, "Generating instructions...")
+            # Steps total = 5 (generate, filter, dedup, pii, balance)
+            total_steps = 5
+            self.progress.emit(1, total_steps, "Generating instructions...")
             gen = InstructionGenerator()
             pairs = gen.generate_from_corpus(
                 self.corpus_file,
                 max_per_type=self.max_per_type,
-                on_progress=lambda c, t, m: self.progress.emit(1, 4, f"[{c}/{t}] {m}"),
+                on_progress=lambda c, t, m: self.progress.emit(
+                    1, total_steps, f"[{c}/{t}] {m}"
+                ),
             )
+            log_stage("1_generate", pairs)
 
             # Step 2: Quality filter
-            self.progress.emit(2, 4, f"Filtering {len(pairs)} pairs...")
+            self.progress.emit(2, total_steps, f"Filtering {len(pairs)} pairs...")
             pairs, q_stats = filter_pairs(
                 pairs,
                 min_prompt=self.min_prompt,
@@ -98,19 +145,34 @@ class FinetuneWorker(QThread):
                 min_completion=self.min_completion,
                 max_completion=self.max_completion,
             )
+            log_stage("2_filter", pairs)
 
-            # Step 3: PII removal
+            # Step 3: Dedup (Bug 8)
+            self.progress.emit(3, total_steps, f"Deduplicating {len(pairs)} pairs...")
+            pairs, d_stats = dedup_pairs(pairs, mode="prompt+completion")
+            log_stage("3_dedup", pairs)
+
+            # Step 4: PII removal
             if self.remove_pii:
-                self.progress.emit(3, 4, "Removing PII...")
+                self.progress.emit(4, total_steps, "Removing PII...")
                 pairs = [clean_pair(p) for p in pairs]
+            else:
+                self.progress.emit(4, total_steps, "Skipping PII removal (disabled)")
+            log_stage("4_pii", pairs)
 
-            # Step 4: Balance
+            # Step 5: Balance
             if self.balance:
-                self.progress.emit(4, 4, "Balancing dataset...")
+                self.progress.emit(5, total_steps, "Balancing dataset...")
                 pairs = balance_by_type(pairs, max_per_type=self.max_per_type)
+            else:
+                self.progress.emit(5, total_steps, "Skipping balance (disabled)")
+            log_stage("5_balance", pairs)
 
             stats = get_balance_stats(pairs)
             stats["quality"] = q_stats
+            stats["dedup"] = d_stats
+            stats["stage_counts"] = stage_counts
+            stats["warnings"] = warnings
 
             for p in pairs[:100]:  # Emit first 100 for preview
                 self.pair_found.emit(p)
@@ -249,12 +311,18 @@ class FinetuneWindow(QMainWindow):
         self.spin_min_completion.setValue(20)
         settings_layout.addWidget(self.spin_min_completion, 1, 3)
 
+        settings_layout.addWidget(QLabel(tr("ft_max_completion")), 2, 0)
+        self.spin_max_completion = QSpinBox()
+        self.spin_max_completion.setRange(100, 100000)
+        self.spin_max_completion.setValue(16000)
+        settings_layout.addWidget(self.spin_max_completion, 2, 1)
+
         self.chk_balance = QCheckBox(tr("ft_balance"))
         self.chk_balance.setChecked(True)
-        settings_layout.addWidget(self.chk_balance, 2, 0, 1, 2)
+        settings_layout.addWidget(self.chk_balance, 3, 0, 1, 2)
         self.chk_pii = QCheckBox(tr("ft_pii"))
         self.chk_pii.setChecked(True)
-        settings_layout.addWidget(self.chk_pii, 2, 2, 1, 2)
+        settings_layout.addWidget(self.chk_pii, 3, 2, 1, 2)
         outer.addWidget(settings_group)
 
         # === 4. Progress ===
@@ -353,27 +421,60 @@ class FinetuneWindow(QMainWindow):
         cfg = self._build_effective_config()
         if cfg is None:
             return
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, tr("busy"), tr("busy_task"))
+            return
         self._log("INFO", tr("crawl_started"))
         self.status.showMessage(tr("status_working"))
-        try:
-            stats = run_crawl(cfg, resume=True, on_log=self._log, on_progress=self._on_progress)
-            self._log("INFO", f"{tr('crawl_finished')}: {stats}")
-        except Exception as e:
-            self._log("ERROR", str(e))
+        self.btn_crawl.setEnabled(False)
+
+        # Run crawl in QThread to avoid blocking UI
+        from .gui import CrawlWorker
+        self._crawl_worker = CrawlWorker(cfg, mode="crawl", resume=True)
+        self._crawl_worker.progress.connect(self._on_progress)
+        self._crawl_worker.log_message.connect(self._log)
+        self._crawl_worker.finished_stats.connect(self._on_crawl_finished)
+        self._crawl_worker.error.connect(self._on_crawl_error)
+        self._crawl_worker.start()
+
+    def _on_crawl_finished(self, stats):
+        self._log("INFO", f"{tr('crawl_finished')}: {stats}")
         self.status.showMessage(tr("status_ready"))
+        self.btn_crawl.setEnabled(True)
+
+    def _on_crawl_error(self, err):
+        self._log("ERROR", err)
+        self.status.showMessage(tr("status_ready"))
+        self.btn_crawl.setEnabled(True)
 
     def _on_postprocess(self):
         cfg = self._build_effective_config()
         if cfg is None:
             return
+        if hasattr(self, '_crawl_worker') and self._crawl_worker and self._crawl_worker.isRunning():
+            QMessageBox.warning(self, tr("busy"), tr("busy_task"))
+            return
         self._log("INFO", tr("postprocess_started"))
         self.status.showMessage(tr("status_working"))
-        try:
-            stats = run_postprocess(cfg, on_progress=self._on_progress, on_log=self._log)
-            self._log("INFO", f"Post-process done: {stats}")
-        except Exception as e:
-            self._log("ERROR", str(e))
+        self.btn_postprocess.setEnabled(False)
+
+        from .gui import CrawlWorker
+        self._pp_worker = CrawlWorker(cfg, mode="postprocess")
+        self._pp_worker.progress.connect(self._on_progress)
+        self._pp_worker.log_message.connect(self._log)
+        self._pp_worker.finished_stats.connect(self._on_pp_finished)
+        self._pp_worker.error.connect(self._on_pp_error)
+        self._pp_worker.start()
+
+    def _on_pp_finished(self, stats):
+        self._log("INFO", f"Post-process done: {stats}")
         self.status.showMessage(tr("status_ready"))
+        self.btn_postprocess.setEnabled(True)
+
+    def _on_pp_error(self, err):
+        self._log("ERROR", err)
+        self.status.showMessage(tr("status_ready"))
+        self.btn_postprocess.setEnabled(True)
 
     def _on_generate(self):
         cfg = self._build_effective_config()
@@ -396,7 +497,7 @@ class FinetuneWindow(QMainWindow):
             min_prompt=self.spin_min_prompt.value(),
             max_prompt=self.spin_max_prompt.value(),
             min_completion=self.spin_min_completion.value(),
-            max_completion=self.spin_max_prompt.value() * 2,
+            max_completion=self.spin_max_completion.value(),
             balance=self.chk_balance.isChecked(),
             remove_pii=self.chk_pii.isChecked(),
         )
@@ -425,36 +526,57 @@ class FinetuneWindow(QMainWindow):
         self._pairs = pairs
         self._stats = stats
 
-        summary = json.dumps(stats, ensure_ascii=False, indent=2)
+        # Build a readable summary with per-stage counts + warnings
+        stage_counts = stats.get("stage_counts", {})
+        warnings_list = stats.get("warnings", [])
+        q_stats = stats.get("quality", {})
+        d_stats = stats.get("dedup", {})
+
+        lines = []
+        lines.append(f"=== Final dataset: {len(pairs)} pairs ===")
+        lines.append("")
+        lines.append("=== By task_type ===")
+        for t, n in sorted(stats.get("by_type", {}).items()):
+            lines.append(f"  {t:30s} {n:6d}")
+        lines.append("")
+        lines.append("=== Pipeline stages (pair count) ===")
+        # Header row
+        all_types = set()
+        for sc in stage_counts.values():
+            all_types.update(sc.keys())
+        all_types = sorted(all_types)
+        header = "  Stage" + " " * 18 + "Total" + "".join(f"{t[:12]:>13s}" for t in all_types)
+        lines.append(header)
+        for stage, sc in stage_counts.items():
+            row_total = str(sum(sc.values()))
+            row = f"  {stage:22s} {row_total:>5s}" + "".join(f"{sc.get(t, 0):>13d}" for t in all_types)
+            lines.append(row)
+        lines.append("")
+        if q_stats:
+            lines.append(f"=== Filter rejected: {q_stats.get('total', 0) - q_stats.get('kept', 0)} / {q_stats.get('total', 0)} ===")
+            for reason, n in sorted(q_stats.get("rejected", {}).items(), key=lambda x: -x[1]):
+                lines.append(f"  {reason:30s} {n:6d}")
+            lines.append("")
+        if d_stats:
+            lines.append(f"=== Dedup removed: {d_stats.get('removed', 0)} duplicates (mode={d_stats.get('mode', '?')}) ===")
+            lines.append("")
+        if warnings_list:
+            lines.append(f"=== ⚠ Warnings ({len(warnings_list)}) ===")
+            for w in warnings_list:
+                lines.append(f"  ⚠ {w}")
+            lines.append("")
+        lines.append("=== Raw stats (JSON) ===")
+        lines.append(json.dumps(stats, ensure_ascii=False, indent=2))
+
+        summary = "\n".join(lines)
         self.stats_text.setPlainText(summary)
-        self._log("INFO", f"Generated {len(pairs)} pairs: {stats}")
+        self._log("INFO", f"Generated {len(pairs)} pairs; {len(warnings_list)} warnings")
 
-        QMessageBox.information(self, tr("ft_generate"),
-            f"{len(pairs)} instruction pairs generated.\nClick Export to save in fine-tuning format.")
-
-    def _on_export(self):
-        if not hasattr(self, '_pairs') or not self._pairs:
-            QMessageBox.warning(self, tr("ft_export"), tr("ft_no_pairs"))
-            return
-
-        output_dir = QFileDialog.getExistingDirectory(self, tr("ft_export_dir"))
-        if not output_dir:
-            return
-
-        from .postproc.format_converter import FormatConverter
-        from .postproc.instruction_generator import InstructionGenerator
-
-        # Save raw pairs
-        pairs_file = Path(output_dir) / "instruction_pairs.jsonl"
-        InstructionGenerator().save(self._pairs, pairs_file)
-
-        # Convert to all formats
-        results = FormatConverter.convert_all(pairs_file, output_dir)
-
-        summary = "\n".join(f"  {fmt}: {r.get('count', 0)} pairs" for fmt, r in results.items())
-        self._log("INFO", f"Exported to {output_dir}:\n{summary}")
-        QMessageBox.information(self, tr("ft_export"),
-            f"Exported to:\n{output_dir}\n\n{summary}")
+        msg = f"{len(pairs)} instruction pairs generated."
+        if warnings_list:
+            msg += f"\n\n⚠ {len(warnings_list)} warning(s) — see Stats tab."
+        msg += "\nClick Export to save in fine-tuning format."
+        QMessageBox.information(self, tr("ft_generate"), msg)
 
     def _on_error(self, err: str):
         self.status.showMessage(tr("status_ready"))

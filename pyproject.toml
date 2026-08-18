@@ -29,6 +29,7 @@ dependencies = [
     "Pillow>=10.0",
     "datasketch>=1.6",
     "fasttext-langdetect>=1.0.0",
+    "tiktoken>=0.7",
     "pdfplumber>=0.10",
     "aiohttp>=3.9",
     "requests-cache>=1.2",

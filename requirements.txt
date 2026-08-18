@@ -35,6 +35,11 @@ datasketch>=1.6
 # fasttext-langdetect — определение языка, работает на Python 3.10-3.14
 fasttext-langdetect>=1.0.0
 
+# ===== Token counting for fine-tuning (token-based length limits) =====
+# tiktoken — BPE tokenizer (cl100k_base) used by GPT-4 / GPT-3.5.
+# Falls back to char-based heuristic if not installed.
+tiktoken>=0.7
+
 # kenlm — perplexity-фильтр (ОПЦИОНАЛЬНО)
 # ⚠️ kenlm не собирается на Python 3.13+ (использует удалённые CPython C API).
 # Если у вас Python 3.13 или 3.14 — НЕ устанавливайте kenlm.

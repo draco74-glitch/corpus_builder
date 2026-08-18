@@ -26,3 +26,7 @@ upload/
 *.xlsx
 *.tsv
 scripts/
+
+# VCR cassettes accidentally written to project root by tests
+# (real cassettes live in tests/cassettes/)
+/test_*.yaml

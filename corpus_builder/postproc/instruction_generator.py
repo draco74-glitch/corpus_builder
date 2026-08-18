@@ -27,12 +27,85 @@ from typing import Iterator
 
 from ..logging_setup import get_logger
 from ..writer import open_corpus_reader
+from .chunker import chunk_record
 
 log = get_logger(__name__)
 
+# Default chunk size for content that gets truncated to fit in a prompt.
+# 4000 chars ≈ 1000 tokens (English) / 1500 tokens (Russian), which leaves
+# headroom for the prompt wrapper + completion under a 2048-token context.
+DEFAULT_CHUNK_CHARS = 4000
+
 
 class InstructionGenerator:
-    """Генератор инструкций для fine-tuning из собранного корпуса."""
+    """Генератор инструкций для fine-tuning из собранного корпуса.
+
+    Uses an internal corpus cache to avoid reading the file 9+ times
+    (once per generator). The cache is populated on the first call to
+    _get_records_for_type() and stores records grouped by source_type.
+    """
+
+    def __init__(self):
+        # Cache: {corpus_file_path: {source_type: [records]}}
+        # Records are chunked if needed. Populated lazily on first access.
+        self._corpus_cache: dict[str, dict[str, list[dict]]] = {}
+        self._corpus_cache_chunked: dict[str, dict[str, list[dict]]] = {}
+
+    def _clear_cache(self):
+        """Clear the corpus cache. Call this if the corpus file changes."""
+        self._corpus_cache.clear()
+        self._corpus_cache_chunked.clear()
+
+    def _get_records_for_type(
+        self, corpus_file: Path, source_type: str, chunked: bool = False
+    ) -> list[dict]:
+        """Return records matching source_type, using a cache.
+
+        On first call for a given corpus_file, reads the ENTIRE file once
+        and distributes records by source_type. Subsequent calls for any
+        source_type return from cache — no re-reading.
+
+        Args:
+            corpus_file: path to corpus JSONL
+            source_type: filter records by this source_type
+            chunked: if True, return chunked records (long records split
+                into DEFAULT_CHUNK_CHARS pieces); if False, return raw
+
+        Returns:
+            list of records (possibly chunked) matching source_type.
+            Returns ALL records if source_type is None or "".
+        """
+        cache_key = str(corpus_file)
+        if chunked:
+            cache = self._corpus_cache_chunked
+        else:
+            cache = self._corpus_cache
+
+        if cache_key not in cache:
+            # Read the entire corpus ONCE, distribute by source_type
+            by_type: dict[str, list[dict]] = {}
+            if chunked:
+                # Use the chunked iterator
+                for record in self._iter_records_chunked(corpus_file, DEFAULT_CHUNK_CHARS):
+                    st = record.get("source_type", "")
+                    by_type.setdefault(st, []).append(record)
+            else:
+                for record in self._iter_records(corpus_file):
+                    st = record.get("source_type", "")
+                    by_type.setdefault(st, []).append(record)
+            cache[cache_key] = by_type
+            log.debug(f"Corpus cache {'(chunked)' if chunked else ''} populated: "
+                      f"{cache_key} → {sum(len(v) for v in by_type.values())} records, "
+                      f"{len(by_type)} source_types")
+
+        by_type = cache[cache_key]
+        if source_type is None or source_type == "":
+            # Return all records (concatenated)
+            all_recs = []
+            for recs in by_type.values():
+                all_recs.extend(recs)
+            return all_recs
+        return by_type.get(source_type, [])
 
     def generate_from_corpus(
         self,
@@ -99,23 +172,50 @@ class InstructionGenerator:
     # ============================================================
 
     def _gen_article_summary(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """Статья → краткое саммари."""
+        """Article → extractive summary (first sentence of each paragraph).
+
+        Long articles are split into chunks via _iter_records_chunked so the
+        summary covers the WHOLE article (one summary per chunk) rather than
+        only the first 4000 chars. Uses the corpus cache to avoid re-reading.
+        """
         pairs = []
-        for record in self._iter_records(corpus_file):
+        # article_summary doesn't filter by source_type — process all records
+        records = self._get_records_for_type(corpus_file, None, chunked=True)
+        for record in records:
             content = record.get("content", "")
-            if len(content) < 2000:
+            if len(content) < 500:
+                # Skip very short chunks (likely tail of a split article)
                 continue
 
-            # Берём первый абзац как "саммари"
             paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
-            if len(paragraphs) < 3:
+            if len(paragraphs) < 2:
                 continue
-            summary = paragraphs[0]
+
+            # Extractive summarization: take first sentence from each paragraph
+            summary_sentences = []
+            for para in paragraphs[:10]:  # max 10 paragraphs
+                # Split by sentence endings
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                if sentences:
+                    first_sent = sentences[0].strip()
+                    if len(first_sent) > 20:
+                        summary_sentences.append(first_sent)
+
+            if len(summary_sentences) < 2:
+                continue
+
+            summary = " ".join(summary_sentences)
             if len(summary) > 500:
                 summary = summary[:500] + "..."
 
+            # Use full chunk content (already <= DEFAULT_CHUNK_CHARS)
+            chunk_tag = ""
+            total = record.get("total_chunks", 1)
+            if total > 1:
+                chunk_tag = f" (part {record.get('chunk_index', 0) + 1}/{total})"
+
             pairs.append({
-                "prompt": "Write a brief summary of the following technical article:\n\n" + content[:4000],
+                "prompt": "Write a brief summary of the following technical article" + chunk_tag + ":\n\n" + content,
                 "completion": summary,
                 "task_type": "article_summary",
                 "source": record.get("source_url", ""),
@@ -125,10 +225,24 @@ class InstructionGenerator:
         return pairs
 
     def _gen_code_explanation(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """Код → объяснение."""
+        """Code → explanation (extract sentences describing the code).
+
+        Uses _iter_records_chunked so code blocks beyond the first 4000 chars
+        of an article are also found and explained.
+        """
         pairs = []
         code_re = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
-        for record in self._iter_records(corpus_file):
+        # Keywords that indicate an explanation sentence
+        explain_keywords = [
+            "this code", "this function", "this class", "this script",
+            "this snippet", "the following", "below code", "above code",
+            "this module", "this program", "this example", "this method",
+            "этом коде", "эта функция", "этот класс", "этот скрипт",
+            "этот код", "следующий код", "нижеприведенный",
+        ]
+        # code_explanation doesn't filter by source_type — process all records
+        records = self._get_records_for_type(corpus_file, None, chunked=True)
+        for record in records:
             content = record.get("content", "")
             for m in code_re.finditer(content):
                 lang = m.group(1) or "code"
@@ -136,13 +250,41 @@ class InstructionGenerator:
                 if len(code) < 50:
                     continue
 
-                # Контекст вокруг кода
-                start = max(0, m.start() - 200)
-                context = content[start:m.start()].strip()
+                # Look for explanatory sentences BEFORE and AFTER the code block
+                # Search in a window of 500 chars before and after
+                before_start = max(0, m.start() - 500)
+                before_text = content[before_start:m.start()].strip()
+                after_text = content[m.end():m.end() + 500].strip()
+
+                # Find sentences containing explanation keywords
+                explanation_parts = []
+                for text in [before_text, after_text]:
+                    sentences = re.split(r'(?<=[.!?])\s+', text)
+                    for sent in sentences:
+                        sent_lower = sent.lower()
+                        if any(kw in sent_lower for kw in explain_keywords):
+                            # Clean up the sentence
+                            clean = sent.strip().strip("*").strip()
+                            if len(clean) > 20:
+                                explanation_parts.append(clean)
+
+                if not explanation_parts:
+                    # Fallback: take the sentence right before the code
+                    if before_text:
+                        sentences = re.split(r'(?<=[.!?])\s+', before_text)
+                        if sentences and len(sentences[-1]) > 20:
+                            explanation_parts.append(sentences[-1].strip())
+
+                if not explanation_parts:
+                    continue  # Skip if no explanation found
+
+                explanation = " ".join(explanation_parts[:3])  # max 3 sentences
+                if len(explanation) > 1000:
+                    explanation = explanation[:1000] + "..."
 
                 pairs.append({
                     "prompt": f"Explain what this {lang} code does:\n\n```\n{code[:3000]}\n```",
-                    "completion": f"This {lang} code is part of: {context[:500]}",
+                    "completion": explanation,
                     "task_type": "code_explanation",
                     "source": record.get("source_url", ""),
                 })
@@ -151,11 +293,16 @@ class InstructionGenerator:
         return pairs
 
     def _gen_datasheet_specs(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """Datasheet → спецификации компонента."""
+        """Datasheet → спецификации компонента.
+
+        Uses _iter_records_chunked so long PDFs are not truncated.
+        The TOC fallback uses get_prompt() for diverse phrasing, and
+        the component title is escaped to prevent prompt injection.
+        Uses the corpus cache (filtered to source_type=pdf).
+        """
         pairs = []
-        for record in self._iter_records(corpus_file):
-            if record.get("source_type") != "pdf":
-                continue
+        records = self._get_records_for_type(corpus_file, "pdf", chunked=True)
+        for record in records:
             content = record.get("content", "")
             meta = record.get("metadata", {})
 
@@ -173,8 +320,15 @@ class InstructionGenerator:
                 toc = meta.get("toc", [])
                 if toc:
                     toc_text = "\n".join(f"  {e[1]}" for e in toc[:20] if len(e) > 1)
+                    # Escape the title to prevent prompt injection / broken
+                    # formatting when title contains special chars.
+                    title = meta.get("title", "Unknown")
+                    # Build a prompt that includes the component type.
+                    # Use get_prompt for diverse phrasing, then append the
+                    # component type as context.
+                    base_prompt = get_prompt("datasheet_specs", content=title)
                     pairs.append({
-                        "prompt": "List the main sections of an electronic component datasheet:\n\nComponent type: " + (meta.get("title", "Unknown")) ,
+                        "prompt": base_prompt,
                         "completion": toc_text,
                         "task_type": "datasheet_specs",
                         "source": record.get("source_url", ""),
@@ -185,19 +339,33 @@ class InstructionGenerator:
         return pairs
 
     def _gen_concept_explanation(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """Объяснение технических концепций."""
+        """Объяснение технических концепций.
+
+        Uses chunked iteration so headings in the latter half of long articles
+        are also extracted. The completion is truncated at the NEXT heading
+        to avoid mixing content from different sections.
+        """
         pairs = []
         # Ищем заголовки в контенте
         heading_re = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)
-        for record in self._iter_records(corpus_file):
+        # Regex to find the next heading after the current one
+        next_heading_re = re.compile(r"\n#{1,3}\s+", re.MULTILINE)
+        # concept_explanation doesn't filter by source_type — process all
+        records = self._get_records_for_type(corpus_file, None, chunked=True)
+        for record in records:
             content = record.get("content", "")
             for m in heading_re.finditer(content):
                 heading = m.group(1).strip()
                 if len(heading) < 5 or len(heading) > 100:
                     continue
 
-                # Берём текст после заголовка
-                after = content[m.end():m.end() + 2000].strip()
+                # Берём текст после заголовка (up to 2000 chars)
+                after = content[m.end():m.end() + 2000]
+                # Truncate at the next heading to avoid mixing sections
+                next_match = next_heading_re.search(after)
+                if next_match:
+                    after = after[:next_match.start()]
+                after = after.strip()
                 if len(after) < 100:
                     continue
 
@@ -212,74 +380,156 @@ class InstructionGenerator:
         return pairs
 
     def _gen_bom(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """Генерация BOM из описания проекта."""
+        """Generate BOM by parsing KiCad .kicad_sch files for real components.
+
+        Uses the corpus cache (filtered to source_type=github_repo).
+        """
         pairs = []
-        for record in self._iter_records(corpus_file):
-            if record.get("source_type") != "github_repo":
-                continue
+        # Regex for KiCad v6 symbol blocks
+        symbol_re = re.compile(
+            r'\(lib_id\s*"([^"]*)"\)'
+            r'.*?\(property\s*"Reference"\s*"([^"]*)"\)'
+            r'.*?\(property\s*"Value"\s*"([^"]*)"\)',
+            re.DOTALL
+        )
+        records = self._get_records_for_type(corpus_file, "github_repo", chunked=False)
+        for record in records:
             content = record.get("content", "")
-            # Ищем KiCad файлы в downloaded_files
             files = record.get("downloaded_files", [])
             kicad_files = [f for f in files if f.get("type") == "kicad"]
 
-            if kicad_files and len(content) > 200:
+            if not kicad_files or len(content) < 200:
+                continue
+
+            # Parse KiCad files to extract components
+            components = []
+            for kf in kicad_files:
+                kicad_path = kf.get("local_path", "")
+                if kicad_path and Path(kicad_path).exists():
+                    try:
+                        kicad_content = Path(kicad_path).read_text(encoding="utf-8", errors="replace")
+                        for m in symbol_re.finditer(kicad_content):
+                            lib_id, ref, value = m.groups()
+                            if ref and value:
+                                components.append({
+                                    "reference": ref,
+                                    "value": value,
+                                    "lib_id": lib_id,
+                                })
+                    except Exception:
+                        continue
+
+            if components:
+                # Build a real BOM table
+                bom_lines = ["Reference | Value | Library"]
+                bom_lines.append("-" * 40)
+                for comp in components[:50]:  # max 50 components
+                    bom_lines.append(f"{comp['reference']} | {comp['value']} | {comp['lib_id']}")
+
+                bom_text = "\n".join(bom_lines)
                 pairs.append({
                     "prompt": "Generate a Bill of Materials (BOM) for this electronics project:\n\n" + content[:3000],
-                    "completion": f"This project contains {len(kicad_files)} KiCad files. "
-                                  f"Components should be extracted from the .kicad_sch files.",
+                    "completion": f"BOM ({len(components)} components):\n\n{bom_text}",
                     "task_type": "bom_generation",
                     "source": record.get("source_url", ""),
                 })
+            # NOTE: Previously there was a fallback here that created a pair
+            # with completion=content[:1000] when no KiCad components were
+            # found. This taught the model "BOM = first 1000 chars of README"
+            # which is useless. The fallback has been removed — only real
+            # BOMs (parsed from .kicad_sch files) are generated now.
             if len(pairs) >= max_n:
                 break
         return pairs
 
     def _gen_translation(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """Инструкции для перевода."""
-        pairs = []
-        for record in self._iter_records(corpus_file):
-            content = record.get("content", "")
-            lang = record.get("language", "")
+        """Translation instructions — requires parallel corpora.
 
-            if lang == "ru" and len(content) > 500:
-                # RU → EN translation instruction
-                pairs.append({
-                    "prompt": "Translate the following technical text from Russian to English:\n\n" + content[:2000],
-                    "completion": content[:2000],  # Same text (model learns to translate)
-                    "task_type": "translation",
-                    "source": record.get("source_url", ""),
-                })
-            elif lang == "en" and len(content) > 500:
-                # EN → RU translation instruction
-                pairs.append({
-                    "prompt": "Translate the following technical text from English to Russian:\n\n" + content[:2000],
-                    "completion": content[:2000],
-                    "task_type": "translation",
-                    "source": record.get("source_url", ""),
-                })
+        Disabled: without parallel text pairs (RU↔EN on same topic),
+        translation pairs would have prompt==completion, teaching the model
+        identity instead of translation.
 
-            if len(pairs) >= max_n:
-                break
-        return pairs
+        To enable: collect Wikipedia articles via interlanguage links,
+        then match RU article with its EN counterpart.
+        """
+        # TODO: Implement using Wikipedia interlanguage links
+        # For now, return empty list
+        log.info("Translation generator disabled (requires parallel corpora)")
+        return []
 
     def _gen_qa_pairs(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """Q&A из StackExchange."""
+        """Q&A from StackExchange — supports both RU and EN markers.
+
+        The SE crawler produces content with headers like:
+            ## Ответ (score=N) [ПРИНЯТ]\n\n<body>
+            ## Answer (score=N) [ACCEPTED]\\n\\n<body>
+
+        This parser uses a regex to extract the answer BODY (without the
+        score/accepted prefix) and picks the accepted answer if present,
+        otherwise the highest-scored one.
+        """
         pairs = []
-        for record in self._iter_records(corpus_file):
-            if record.get("source_type") != "stackexchange":
-                continue
+        # Regex to extract answer bodies with their metadata.
+        # Matches: ## Ответ (score=N) [ПРИНЯТ]\n\n<body>
+        #      or: ## Ответ (score=N)\n\n<body>  (no accepted marker)
+        answer_re = re.compile(
+            r'## (?:Ответ|Answer)\s*'
+            r'(?:\(score=([\-\d]+)\)\s*)?'  # (score=N) — optional
+            r'(\[ПРИНЯТ\]|\[ACCEPTED\])?\s*'
+            r'\n\n'
+            r'(.*?)(?=\n## (?:Ответ|Answer)|\Z)',
+            re.DOTALL,
+        )
+        # Regex to extract the question body
+        question_re = re.compile(
+            r'## (?:Вопрос|Question)\n\n(.*?)(?=\n## (?:Ответ|Answer)|\Z)',
+            re.DOTALL,
+        )
+
+        records = self._get_records_for_type(corpus_file, "stackexchange", chunked=False)
+        for record in records:
             content = record.get("content", "")
-            # Парсим Q&A структуру
-            parts = content.split("## Вопрос")
-            if len(parts) < 2:
+
+            # Extract question body
+            q_match = question_re.search(content)
+            if not q_match:
                 continue
-            question = parts[1].split("## Ответ")[0].strip()
-            answer_section = "## Ответ".join(content.split("## Ответ")[1:])
-            # Берём первый ответ (после [ПРИНЯТ])
-            if "[ПРИНЯТ]" in answer_section:
-                answer = answer_section.split("[ПРИНЯТ]")[1].split("## Ответ")[0].strip()
-            else:
-                answer = answer_section.split("## Ответ")[0].strip() if "## Ответ" in answer_section else answer_section[:1000]
+            question = q_match.group(1).strip()
+            if len(question) < 20:
+                continue
+
+            # Extract all answers with their score + accepted status + body
+            answers = []
+            for m in answer_re.finditer(content):
+                score_str = m.group(1)
+                score = int(score_str) if score_str else 0
+                is_accepted = bool(m.group(2))
+                body = m.group(3).strip()
+                if len(body) < 20:
+                    continue
+                answers.append({
+                    "score": score,
+                    "is_accepted": is_accepted,
+                    "body": body,
+                })
+
+            if not answers:
+                # Fallback: try to parse from metadata (SE API structure)
+                meta = record.get("metadata", {})
+                meta_answers = meta.get("answers") or []
+                accepted_meta = [a for a in meta_answers if a.get("is_accepted")]
+                if not accepted_meta:
+                    accepted_meta = sorted(meta_answers, key=lambda a: a.get("score", 0), reverse=True)[:1]
+                if accepted_meta:
+                    # body_chars is just a count, not the text; we can't
+                    # reconstruct the answer from metadata alone. Skip.
+                    continue
+                else:
+                    continue
+
+            # Pick the best answer: accepted first, else highest score
+            answers.sort(key=lambda a: (not a["is_accepted"], -a["score"]))
+            answer = answers[0]["body"]
 
             if len(question) > 20 and len(answer) > 20:
                 title = record.get("metadata", {}).get("title", "")
@@ -294,11 +544,10 @@ class InstructionGenerator:
         return pairs
 
     def _gen_kicad_pairs(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """KiCad ↔ описание."""
+        """KiCad ↔ описание. Uses the corpus cache (filtered to github_repo)."""
         pairs = []
-        for record in self._iter_records(corpus_file):
-            if record.get("source_type") != "github_repo":
-                continue
+        records = self._get_records_for_type(corpus_file, "github_repo", chunked=False)
+        for record in records:
             content = record.get("content", "")
             files = record.get("downloaded_files", [])
 
@@ -319,14 +568,15 @@ class InstructionGenerator:
         return pairs
 
     def _gen_faq_pairs(self, corpus_file: Path, max_n: int) -> list[dict]:
-        """FAQ Q&A парсинг."""
+        """FAQ Q&A парсинг. Uses the corpus cache (all source_types)."""
         pairs = []
         qa_re = re.compile(
             r"(?:\*\*)?Q(?:uestion)?:?\s*\*{0,2}(.*?)(?:\n\s*\n)"
             r"(?:\*\*)?A(?:nswer)?:?\s*\*{0,2}(.*?)(?=\n\s*\n|\nQ|\Z)",
             re.DOTALL | re.IGNORECASE
         )
-        for record in self._iter_records(corpus_file):
+        records = self._get_records_for_type(corpus_file, None, chunked=False)
+        for record in records:
             content = record.get("content", "")
             # Ищем FAQ секции
             if not re.search(r"FAQ|Frequently Asked|Часто задаваемые", content, re.IGNORECASE):
@@ -362,6 +612,32 @@ class InstructionGenerator:
                     yield json.loads(line)
                 except json.JSONDecodeError:
                     continue
+
+    @staticmethod
+    def _iter_records_chunked(corpus_file: Path, max_chars: int = DEFAULT_CHUNK_CHARS) -> Iterator[dict]:
+        """Iterate corpus records, splitting long ones into chunks.
+
+        Each yielded record has the same metadata as the original, but
+        `content` is replaced with a chunk of at most `max_chars` chars.
+        Long articles become multiple chunks, allowing the instruction
+        generators to see the FULL article (in pieces) instead of only
+        the first 4000 chars.
+
+        Chunk metadata is added to each record:
+            chunk_index: 0-based index of this chunk
+            total_chunks: total number of chunks for the original record
+        """
+        with open_corpus_reader(corpus_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                for chunk in chunk_record(record, max_chars=max_chars):
+                    yield chunk
 
     @staticmethod
     def get_stats(pairs: list[dict]) -> dict:
