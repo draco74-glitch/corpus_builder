@@ -28,6 +28,7 @@ from typing import Iterator
 from ..logging_setup import get_logger
 from ..writer import open_corpus_reader
 from .chunker import chunk_record
+from .prompt_variations import get_prompt
 
 log = get_logger(__name__)
 
@@ -112,19 +113,26 @@ class InstructionGenerator:
         corpus_file: str | Path,
         max_per_type: int = 1000,
         on_progress=None,
+        task_types: list[str] | None = None,
     ) -> list[dict]:
-        """Сгенерировать все типы инструкций из корпуса.
+        """Сгенерировать инструкции из корпуса.
 
         Параметры:
             corpus_file: путь к corpus_final.jsonl
             max_per_type: максимум пар каждого типа
+            on_progress: callback(current, total, message)
+            task_types: список типов для генерации (None = все).
+                Поддерживаемые: article_summary, code_explanation,
+                datasheet_specs, concept_explanation, bom_generation,
+                translation, qa_stackexchange, multi_turn_dialogue,
+                kicad_to_description, faq_qa.
 
         Возвращает list[dict] пар {prompt, completion, task_type, source}.
         """
         all_pairs: list[dict] = []
         stats: dict[str, int] = {}
 
-        generators = [
+        all_generators = [
             ("article_summary", self._gen_article_summary, max_per_type),
             ("code_explanation", self._gen_code_explanation, max_per_type),
             ("datasheet_specs", self._gen_datasheet_specs, max_per_type),
@@ -132,9 +140,20 @@ class InstructionGenerator:
             ("bom_generation", self._gen_bom, max_per_type),
             ("translation", self._gen_translation, max_per_type),
             ("qa_stackexchange", self._gen_qa_pairs, max_per_type),
+            ("multi_turn_dialogue", self._gen_multi_turn_dialogue, max_per_type),
             ("kicad_to_description", self._gen_kicad_pairs, max_per_type),
             ("faq_qa", self._gen_faq_pairs, max_per_type),
         ]
+        # Filter by task_types if specified
+        if task_types is not None:
+            task_set = set(task_types)
+            generators = [g for g in all_generators if g[0] in task_set]
+            skipped = len(all_generators) - len(generators)
+            if skipped:
+                log.info(f"Filtered generators: {len(generators)}/{len(all_generators)} "
+                         f"(skipped {skipped} types not in {sorted(task_set)})")
+        else:
+            generators = all_generators
 
         total_steps = len(generators)
         for i, (task_type, gen_func, max_n) in enumerate(generators):
@@ -214,8 +233,11 @@ class InstructionGenerator:
             if total > 1:
                 chunk_tag = f" (part {record.get('chunk_index', 0) + 1}/{total})"
 
+            base_prompt = get_prompt("article_summary", content=content)
+            if chunk_tag:
+                base_prompt = base_prompt.replace("article:\n\n", f"article{chunk_tag}:\n\n")
             pairs.append({
-                "prompt": "Write a brief summary of the following technical article" + chunk_tag + ":\n\n" + content,
+                "prompt": base_prompt,
                 "completion": summary,
                 "task_type": "article_summary",
                 "source": record.get("source_url", ""),
@@ -283,7 +305,7 @@ class InstructionGenerator:
                     explanation = explanation[:1000] + "..."
 
                 pairs.append({
-                    "prompt": f"Explain what this {lang} code does:\n\n```\n{code[:3000]}\n```",
+                    "prompt": get_prompt("code_explanation", code=code[:3000], lang=lang),
                     "completion": explanation,
                     "task_type": "code_explanation",
                     "source": record.get("source_url", ""),
@@ -310,7 +332,7 @@ class InstructionGenerator:
             if "EXTRACTED TABLES" in content:
                 tables = content.split("EXTRACTED TABLES")[-1]
                 pairs.append({
-                    "prompt": "Extract key electrical characteristics from this datasheet and list them as a structured table:\n\n" + content[:3000],
+                    "prompt": get_prompt("datasheet_specs", content=content[:3000]),
                     "completion": tables[:3000],
                     "task_type": "datasheet_specs",
                     "source": record.get("source_url", ""),
@@ -370,7 +392,7 @@ class InstructionGenerator:
                     continue
 
                 pairs.append({
-                    "prompt": f"Explain the concept: \"{heading}\"",
+                    "prompt": get_prompt("concept_explanation", heading=heading),
                     "completion": after[:1500],
                     "task_type": "concept_explanation",
                     "source": record.get("source_url", ""),
@@ -428,7 +450,7 @@ class InstructionGenerator:
 
                 bom_text = "\n".join(bom_lines)
                 pairs.append({
-                    "prompt": "Generate a Bill of Materials (BOM) for this electronics project:\n\n" + content[:3000],
+                    "prompt": get_prompt("bom_generation", content=content[:3000]),
                     "completion": f"BOM ({len(components)} components):\n\n{bom_text}",
                     "task_type": "bom_generation",
                     "source": record.get("source_url", ""),
@@ -438,6 +460,7 @@ class InstructionGenerator:
             # found. This taught the model "BOM = first 1000 chars of README"
             # which is useless. The fallback has been removed — only real
             # BOMs (parsed from .kicad_sch files) are generated now.
+
             if len(pairs) >= max_n:
                 break
         return pairs
@@ -534,7 +557,7 @@ class InstructionGenerator:
             if len(question) > 20 and len(answer) > 20:
                 title = record.get("metadata", {}).get("title", "")
                 pairs.append({
-                    "prompt": f"Question: {title}\n\n{question}",
+                    "prompt": get_prompt("qa_stackexchange", question=f"{title}\n\n{question}" if title else question),
                     "completion": answer,
                     "task_type": "qa_stackexchange",
                     "source": record.get("source_url", ""),
@@ -558,7 +581,7 @@ class InstructionGenerator:
             if kicad_files and readme:
                 # KiCad → описание
                 pairs.append({
-                    "prompt": "Describe the circuit based on this KiCad schematic:\n\n" + readme[:2000],
+                    "prompt": get_prompt("kicad_to_description", content=readme[:2000]),
                     "completion": f"This project contains {len(kicad_files)} KiCad schematic files.",
                     "task_type": "kicad_to_description",
                     "source": record.get("source_url", ""),
@@ -587,7 +610,7 @@ class InstructionGenerator:
                 a = m.group(2).strip().strip("*").strip()
                 if len(q) > 20 and len(a) > 20:
                     pairs.append({
-                        "prompt": q,
+                        "prompt": get_prompt("faq_qa", question=q),
                         "completion": a,
                         "task_type": "faq_qa",
                         "source": record.get("source_url", ""),
@@ -595,6 +618,182 @@ class InstructionGenerator:
                     if len(pairs) >= max_n:
                         return pairs
         return pairs
+
+    def _gen_multi_turn_dialogue(self, corpus_file: Path, max_n: int) -> list[dict]:
+        """Multi-turn dialogue from StackExchange Q + multiple answers.
+
+        Builds a conversation:
+            User: <question>
+            Assistant: <accepted or top answer>
+            User: <follow-up derived from next answer's framing>
+            Assistant: <next answer>
+            ...
+
+        Each pair's `prompt` is the FULL conversation up to the last user
+        turn, and `completion` is the assistant's next response. This is the
+        standard "supervised fine-tuning on conversations" format used by
+        OpenAI / Anthropic / Mistral.
+
+        We also store a `conversation` list in the pair metadata so the
+        FormatConverter can emit proper ShareGPT/ChatML multi-turn format.
+        """
+        pairs = []
+        # Pattern matches both RU and EN answer headers:
+        #   ## Ответ (score=N) [ПРИНЯТ]
+        #   ## Answer (score=N) [ACCEPTED]
+        answer_re = re.compile(
+            r'## (?:Ответ|Answer)\s*\(score=([\-\d]+)\)\s*(\[ПРИНЯТ\]|\[ACCEPTED\])?\s*\n\n(.*?)(?=\n## (?:Ответ|Answer)|\Z)',
+            re.DOTALL,
+        )
+
+        records = self._get_records_for_type(corpus_file, "stackexchange", chunked=False)
+        for record in records:
+            content_text = record.get("content", "")
+            meta = record.get("metadata", {})
+            title = meta.get("title", "")
+
+            # Extract question body
+            q_match = re.search(
+                r'## (?:Вопрос|Question)\n\n(.*?)(?=\n## (?:Ответ|Answer)|\Z)',
+                content_text, re.DOTALL,
+            )
+            if not q_match:
+                continue
+            question_body = q_match.group(1).strip()
+            if len(question_body) < 30:
+                continue
+
+            # Extract all answers, sorted by (accepted first, then score desc)
+            answers = []
+            for m in answer_re.finditer(content_text):
+                score = int(m.group(1))
+                is_accepted = bool(m.group(2))
+                body = m.group(3).strip()
+                if len(body) < 30:
+                    continue
+                answers.append({
+                    "score": score,
+                    "is_accepted": is_accepted,
+                    "body": body,
+                })
+            if len(answers) < 2:
+                continue  # Need at least 2 answers for multi-turn
+
+            # Sort: accepted first, then by score desc
+            answers.sort(key=lambda a: (not a["is_accepted"], -a["score"]))
+
+            # Build conversation turns
+            # Turn 1: user asks the question
+            conversation = [
+                {"role": "user", "content": f"{title}\n\n{question_body}" if title else question_body},
+            ]
+            # Turn 2: assistant gives first (best) answer
+            conversation.append({"role": "assistant", "content": answers[0]["body"]})
+
+            # For each subsequent answer, generate a context-aware follow-up
+            # question that bridges from the previous answer to the next.
+            # Instead of hardcoded templates, we extract key terms from the
+            # previous answer and build a question around them. This produces
+            # more natural and diverse follow-ups.
+            import random as _random
+            _rng = _random.Random(hash(record.get("source_url", "")) & 0xFFFFFFFF)
+
+            # Take up to 3 more answers (so max 4 turns total: 2 user + 2 assistant)
+            for ans in answers[1:4]:
+                follow_up = self._generate_follow_up(
+                    conversation[-1]["content"],  # previous assistant answer
+                    ans["body"],                   # next answer (for context)
+                    _rng,
+                )
+                conversation.append({"role": "user", "content": follow_up})
+                conversation.append({"role": "assistant", "content": ans["body"]})
+
+            # Build the multi-turn pair.
+            # `prompt` = full conversation up to (but not including) the
+            #   last assistant turn, formatted as "User: ...\n\nAssistant: ...".
+            #   This is the text the model sees as context.
+            # `completion` = the last assistant message (what the model
+            #   should produce).
+            # `conversation` = the full structured conversation list, used
+            #   by FormatConverter to emit proper multi-turn ShareGPT/ChatML.
+            prompt_parts = []
+            for turn in conversation[:-1]:  # all but last assistant
+                role = "User" if turn["role"] == "user" else "Assistant"
+                prompt_parts.append(f"{role}: {turn['content']}")
+            full_prompt = "\n\n".join(prompt_parts)
+            completion = conversation[-1]["content"]
+
+            pairs.append({
+                "prompt": full_prompt,
+                "completion": completion,
+                "task_type": "multi_turn_dialogue",
+                "source": record.get("source_url", ""),
+                "conversation": conversation,  # full conversation for converters
+            })
+            if len(pairs) >= max_n:
+                break
+        return pairs
+
+    @staticmethod
+    def _generate_follow_up(prev_answer: str, next_answer: str,
+                            rng: _random.Random) -> str:
+        """Generate a context-aware follow-up question.
+
+        Instead of hardcoded templates, extracts key terms from the previous
+        answer and builds a question that naturally leads to the next answer.
+        Falls back to generic questions if extraction fails.
+
+        Args:
+            prev_answer: the assistant's previous answer
+            next_answer: the next answer (used to pick relevant terms)
+            rng: random number generator for reproducibility
+
+        Returns:
+            A follow-up question string.
+        """
+        import re
+
+        # Extract candidate terms: words 4+ chars, not stopwords, that appear
+        # in BOTH answers (these are likely the "bridge" concepts).
+        stop_words = {
+            "the", "this", "that", "with", "from", "have", "will", "your",
+            "what", "when", "which", "their", "they", "them", "then", "than",
+            "been", "were", "would", "could", "should", "about", "there",
+            "where", "into", "over", "after", "also", "more", "such", "only",
+            "some", "very", "just", "much", "many", "most", "other", "into",
+            "through", "during", "before", "above", "below", "between",
+            "этом", "эта", "этот", "что", "как", "для", "при", "или", "также",
+        }
+        prev_words = set(re.findall(r'[A-Za-zА-Яа-я]{4,}', prev_answer.lower()))
+        next_words = set(re.findall(r'[A-Za-zА-Яа-я]{4,}', next_answer.lower()))
+        # Terms in both answers, excluding stopwords
+        bridge_terms = (prev_words & next_words) - stop_words
+
+        # Question templates that incorporate a bridge term
+        if bridge_terms:
+            term = rng.choice(sorted(bridge_terms))
+            templates = [
+                f"Can you tell me more about {term}?",
+                f"What did you mean by {term}?",
+                f"How does {term} relate to the rest?",
+                f"Could you expand on {term}?",
+                f"I'm not sure I understand {term} — can you clarify?",
+                f"What are the implications of {term}?",
+            ]
+            return rng.choice(templates)
+
+        # Fallback: generic but varied follow-ups (no hardcoded single phrase)
+        generic = [
+            "Can you elaborate on that?",
+            "Could you explain that in more detail?",
+            "What about the second part of my question?",
+            "Are there any caveats or edge cases I should know about?",
+            "How does that work in practice? Can you give an example?",
+            "What if I need to handle a different scenario?",
+            "Is there a simpler way to think about this?",
+            "Could you expand on the trade-offs here?",
+        ]
+        return rng.choice(generic)
 
     # ============================================================
     # Helpers

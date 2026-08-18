@@ -180,3 +180,117 @@ def filter_and_dedup_pairs(
         "total_removed": len(pairs) - len(deduped),
     }
     return deduped, stats
+
+
+# ============================================================
+# Semantic deduplication via MinHash (Improvement 18)
+# ============================================================
+
+def _shingle(text: str, k: int = 3) -> set[str]:
+    """Split text into k-shingles (word n-grams).
+
+    Args:
+        text: input text
+        k: number of words per shingle (default 3)
+
+    Returns:
+        set of shingle strings
+    """
+    words = text.lower().split()
+    if len(words) < k:
+        return {text.lower().strip()}
+    return {" ".join(words[i:i+k]) for i in range(len(words) - k + 1)}
+
+
+def _minhash_signature(shingles: set[str], num_perm: int = 128, seed: int = 42) -> list[int]:
+    """Compute a MinHash signature for a set of shingles.
+
+    Uses a simple hash-based approach (no datasketch dependency required).
+    Each permutation is simulated by hashing (shingle, perm_index).
+    """
+    import hashlib
+    if not shingles:
+        return [0] * num_perm
+    signature = []
+    for i in range(num_perm):
+        min_hash = float('inf')
+        for shingle in shingles:
+            h = int(hashlib.sha1(f"{i}:{shingle}".encode()).hexdigest(), 16)
+            if h < min_hash:
+                min_hash = h
+        signature.append(min_hash)
+    return signature
+
+
+def _jaccard_from_signatures(sig1: list[int], sig2: list[int]) -> float:
+    """Estimate Jaccard similarity from two MinHash signatures."""
+    if not sig1 or not sig2:
+        return 0.0
+    matches = sum(1 for a, b in zip(sig1, sig2) if a == b)
+    return matches / len(sig1)
+
+
+def dedup_pairs_semantic(
+    pairs: list[dict],
+    threshold: float = 0.85,
+    field: str = "prompt",
+    num_perm: int = 128,
+) -> tuple[list[dict], dict]:
+    """Remove near-duplicate pairs by semantic similarity (MinHash).
+
+    Two pairs are considered near-duplicates if their Jaccard similarity
+    (estimated via MinHash on k-shingles) exceeds `threshold`. This catches
+    paraphrased prompts that exact-match dedup misses.
+
+    Args:
+        pairs: list of {prompt, completion, ...} dicts
+        threshold: Jaccard similarity threshold (0.0-1.0). Pairs with
+            similarity >= threshold are considered duplicates.
+        field: which field to compare ('prompt', 'completion', or 'prompt+completion')
+        num_perm: number of MinHash permutations (more = more accurate but slower)
+
+    Returns:
+        (deduped_pairs, stats) where stats includes removed count and
+        similarity distribution.
+    """
+    if not pairs:
+        return [], {"input": 0, "kept": 0, "removed": 0, "threshold": threshold}
+
+    # Compute MinHash signatures for all pairs
+    signatures: list[tuple[int, list[int]]] = []  # (index, signature)
+    for i, pair in enumerate(pairs):
+        if field == "prompt+completion":
+            text = pair.get("prompt", "") + " " + pair.get("completion", "")
+        else:
+            text = pair.get(field, "")
+        shingles = _shingle(text)
+        sig = _minhash_signature(shingles, num_perm)
+        signatures.append((i, sig))
+
+    # Compare all pairs and mark duplicates
+    removed_indices: set[int] = set()
+    similarity_scores: list[float] = []
+    for i in range(len(signatures)):
+        if signatures[i][0] in removed_indices:
+            continue
+        for j in range(i + 1, len(signatures)):
+            if signatures[j][0] in removed_indices:
+                continue
+            sim = _jaccard_from_signatures(signatures[i][1], signatures[j][1])
+            if sim >= threshold:
+                removed_indices.add(signatures[j][0])
+                similarity_scores.append(sim)
+
+    deduped = [p for i, p in enumerate(pairs) if i not in removed_indices]
+    stats = {
+        "input": len(pairs),
+        "kept": len(deduped),
+        "removed": len(removed_indices),
+        "threshold": threshold,
+        "field": field,
+        "avg_similarity_of_removed": (
+            sum(similarity_scores) / len(similarity_scores)
+            if similarity_scores else 0.0
+        ),
+    }
+    return deduped, stats

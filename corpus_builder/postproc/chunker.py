@@ -3,27 +3,68 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
+# Regex to match fenced code blocks (```...```)
+# Used to protect them from being split mid-block.
+_CODE_BLOCK_RE = re.compile(r'```(\w*)\n.*?```', re.DOTALL)
+
+
+def _extract_code_blocks(text: str) -> tuple[str, list[str]]:
+    """Replace code blocks with placeholders, return (text_with_placeholders, blocks).
+
+    This protects code blocks from being split by the chunker. Each code
+    block is replaced with a unique placeholder like __CODE_BLOCK_0__ that
+    won't be broken by sentence/paragraph splitting.
+    """
+    blocks: list[str] = []
+
+    def _replace(m: re.Match) -> str:
+        blocks.append(m.group(0))
+        return f"__CODE_BLOCK_{len(blocks) - 1}__"
+
+    text_with_placeholders = _CODE_BLOCK_RE.sub(_replace, text)
+    return text_with_placeholders, blocks
+
+
+def _restore_code_blocks(text: str, blocks: list[str]) -> str:
+    """Restore code blocks from placeholders."""
+    for i, block in enumerate(blocks):
+        text = text.replace(f"__CODE_BLOCK_{i}__", block)
+    return text
+
 
 def chunk_text(text: str, max_chars: int = 4000, overlap: int = 200) -> list[str]:
-    """Разделить текст на чанки, сохраняя границы абзацев где возможно.
+    """Разделить текст на чанки, сохраняя границы абзацев и code blocks.
 
     Algorithm:
-      1. Split by paragraphs (\\n\\n) first.
-      2. Greedily pack paragraphs into a chunk until adding the next would
+      1. Extract fenced code blocks (```...```), replace with placeholders.
+      2. Split by paragraphs (\\n\\n) first.
+      3. Greedily pack paragraphs into a chunk until adding the next would
          exceed max_chars.
-      3. If a single paragraph is longer than max_chars, split it further by
+      4. If a single paragraph is longer than max_chars, split it further by
          sentences (preserving sentence boundaries).
-      4. Overlap: when starting a new chunk, optionally carry the last
+      5. Overlap: when starting a new chunk, optionally carry the last
          `overlap` chars of the previous chunk as context.
+      6. Restore code blocks from placeholders.
     """
     if len(text) <= max_chars:
         return [text]
 
+    # Protect code blocks from being split
+    text_with_placeholders, code_blocks = _extract_code_blocks(text)
+
+    chunks_with_placeholders = _chunk_text_raw(text_with_placeholders, max_chars, overlap)
+
+    # Restore code blocks in each chunk
+    chunks = [_restore_code_blocks(c, code_blocks) for c in chunks_with_placeholders]
+    return chunks
+
+
+def _chunk_text_raw(text: str, max_chars: int, overlap: int) -> list[str]:
+    """Internal chunker that operates on text with code blocks already extracted."""
     chunks: list[str] = []
     # Split on double-newline paragraph boundaries, keep separator-aware
     paragraphs = re.split(r'(\n\n+)', text)
     # Re-join paragraph + its separator so we can pack correctly
-    # paragraphs[0] is text, [1] is "\n\n", [2] is text, [3] is "\n\n", etc.
     units: list[str] = []
     i = 0
     while i < len(paragraphs):
@@ -40,7 +81,6 @@ def chunk_text(text: str, max_chars: int = 4000, overlap: int = 200) -> list[str
             # Flush current chunk first
             if current.strip():
                 chunks.append(current.strip())
-                # Overlap: carry last `overlap` chars
                 if overlap > 0 and len(current) > overlap:
                     current = current[-overlap:] + " "
                 else:
@@ -58,7 +98,6 @@ def chunk_text(text: str, max_chars: int = 4000, overlap: int = 200) -> list[str
         # Normal case: pack unit into current chunk
         if len(current) + len(unit) > max_chars and current:
             chunks.append(current.strip())
-            # Overlap: carry last `overlap` chars of the previous chunk
             if overlap > 0 and len(current) > overlap:
                 current = current[-overlap:] + unit
             else:
@@ -81,7 +120,6 @@ def _split_by_sentences(text: str, max_chars: int, overlap: int) -> list[str]:
         if len(current) + len(sent) > max_chars and current:
             chunks.append(current.strip())
             if overlap > 0 and len(current) > overlap:
-                # Take last ~overlap chars worth of words
                 words = current.split()
                 tail = " ".join(words[-max(1, overlap // 10):])
                 current = tail + " " + sent
@@ -99,6 +137,7 @@ def chunk_record(record: dict, max_chars: int = 4000) -> list[dict]:
 
     Each chunk is a copy of the original record with `content` replaced
     by the chunk text, and `chunk_index` / `total_chunks` added.
+    Code blocks are protected from being split mid-block.
     """
     content = record.get("content", "")
     if len(content) <= max_chars:

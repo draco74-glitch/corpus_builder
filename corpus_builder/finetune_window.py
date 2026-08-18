@@ -62,7 +62,11 @@ class FinetuneWorker(QThread):
     def __init__(self, corpus_file: str, max_per_type: int = 1000,
                  min_prompt: int = 20, max_prompt: int = 8000,
                  min_completion: int = 20, max_completion: int = 16000,
-                 balance: bool = True, remove_pii: bool = True):
+                 balance: bool = True, remove_pii: bool = True,
+                 task_types: list[str] | None = None,
+                 use_token_limits: bool = False,
+                 min_prompt_tokens: int = 5, max_prompt_tokens: int = 2000,
+                 min_completion_tokens: int = 5, max_completion_tokens: int = 4000):
         super().__init__()
         self.corpus_file = corpus_file
         self.max_per_type = max_per_type
@@ -72,14 +76,25 @@ class FinetuneWorker(QThread):
         self.max_completion = max_completion
         self.balance = balance
         self.remove_pii = remove_pii
+        self.task_types = task_types  # None = all types
+        # Improvement 13: token-based limits
+        self.use_token_limits = use_token_limits
+        self.min_prompt_tokens = min_prompt_tokens
+        self.max_prompt_tokens = max_prompt_tokens
+        self.min_completion_tokens = min_completion_tokens
+        self.max_completion_tokens = max_completion_tokens
+        # Improvement 20: per-stage timing
+        self.stage_times: dict[str, float] = {}
 
     def run(self):
+        import time as _time
         try:
             from .postproc.instruction_generator import InstructionGenerator
             from .postproc.quality_finetune import filter_pairs, dedup_pairs
             from .postproc.dataset_balancer import balance_by_type, get_balance_stats
             from .postproc.pii_filter import clean_pair
             from .postproc.prompt_variations import set_seed as set_prompt_seed
+            from .postproc.token_utils import passes_token_limits
 
             # Seed the prompt variations RNG so that prompt selection is
             # reproducible across runs. Without this, the global _rng in
@@ -99,10 +114,13 @@ class FinetuneWorker(QThread):
                     counts[t] = counts.get(t, 0) + 1
                 return counts
 
-            def log_stage(stage: str, pairs_list):
+            def log_stage(stage: str, pairs_list, stage_start_time: float):
+                elapsed = _time.time() - stage_start_time
+                self.stage_times[stage] = elapsed
                 counts = count_by_type(pairs_list)
                 stage_counts[stage] = counts
-                log.info(f"[stage] {stage}: {len(pairs_list)} pairs, by_type={counts}")
+                log.info(f"[stage] {stage}: {len(pairs_list)} pairs, "
+                         f"{elapsed:.2f}s, by_type={counts}")
                 # Check for type collapse vs the previous stage
                 prev_stages = [s for s in stage_counts if s != stage]
                 if prev_stages:
@@ -125,6 +143,7 @@ class FinetuneWorker(QThread):
             # Step 1: Generate instructions
             # Steps total = 5 (generate, filter, dedup, pii, balance)
             total_steps = 5
+            t0 = _time.time()
             self.progress.emit(1, total_steps, "Generating instructions...")
             gen = InstructionGenerator()
             pairs = gen.generate_from_corpus(
@@ -133,46 +152,76 @@ class FinetuneWorker(QThread):
                 on_progress=lambda c, t, m: self.progress.emit(
                     1, total_steps, f"[{c}/{t}] {m}"
                 ),
+                task_types=self.task_types,
             )
-            log_stage("1_generate", pairs)
+            log_stage("1_generate", pairs, t0)
 
-            # Step 2: Quality filter
+            # Step 2: Quality filter (char-based or token-based)
+            t1 = _time.time()
             self.progress.emit(2, total_steps, f"Filtering {len(pairs)} pairs...")
-            pairs, q_stats = filter_pairs(
-                pairs,
-                min_prompt=self.min_prompt,
-                max_prompt=self.max_prompt,
-                min_completion=self.min_completion,
-                max_completion=self.max_completion,
-            )
-            log_stage("2_filter", pairs)
+            if self.use_token_limits:
+                # Improvement 13: use token-based limits
+                from .postproc.quality_finetune import filter_pairs as _fp
+                kept = []
+                rejected: dict[str, int] = {}
+                for pair in pairs:
+                    ok, reason = passes_token_limits(
+                        pair,
+                        min_prompt_tokens=self.min_prompt_tokens,
+                        max_prompt_tokens=self.max_prompt_tokens,
+                        min_completion_tokens=self.min_completion_tokens,
+                        max_completion_tokens=self.max_completion_tokens,
+                    )
+                    if ok:
+                        kept.append(pair)
+                    else:
+                        rejected[reason] = rejected.get(reason, 0) + 1
+                pairs = kept
+                q_stats = {"total": len(pairs) + sum(rejected.values()),
+                           "kept": len(pairs), "rejected": rejected,
+                           "mode": "token_based"}
+                log.info(f"[stage] 2_filter (token-based): kept {len(pairs)}, "
+                         f"rejected {rejected}")
+            else:
+                pairs, q_stats = filter_pairs(
+                    pairs,
+                    min_prompt=self.min_prompt,
+                    max_prompt=self.max_prompt,
+                    min_completion=self.min_completion,
+                    max_completion=self.max_completion,
+                )
+            log_stage("2_filter", pairs, t1)
 
             # Step 3: Dedup (Bug 8)
+            t2 = _time.time()
             self.progress.emit(3, total_steps, f"Deduplicating {len(pairs)} pairs...")
             pairs, d_stats = dedup_pairs(pairs, mode="prompt+completion")
-            log_stage("3_dedup", pairs)
+            log_stage("3_dedup", pairs, t2)
 
             # Step 4: PII removal
+            t3 = _time.time()
             if self.remove_pii:
                 self.progress.emit(4, total_steps, "Removing PII...")
                 pairs = [clean_pair(p) for p in pairs]
             else:
                 self.progress.emit(4, total_steps, "Skipping PII removal (disabled)")
-            log_stage("4_pii", pairs)
+            log_stage("4_pii", pairs, t3)
 
             # Step 5: Balance
+            t4 = _time.time()
             if self.balance:
                 self.progress.emit(5, total_steps, "Balancing dataset...")
                 pairs = balance_by_type(pairs, max_per_type=self.max_per_type)
             else:
                 self.progress.emit(5, total_steps, "Skipping balance (disabled)")
-            log_stage("5_balance", pairs)
+            log_stage("5_balance", pairs, t4)
 
             stats = get_balance_stats(pairs)
             stats["quality"] = q_stats
             stats["dedup"] = d_stats
             stats["stage_counts"] = stage_counts
             stats["warnings"] = warnings
+            stats["stage_times"] = self.stage_times  # Improvement 20
 
             for p in pairs[:100]:  # Emit first 100 for preview
                 self.pair_found.emit(p)
@@ -194,6 +243,7 @@ class FinetuneWindow(QMainWindow):
         super().__init__()
         self.config: AppConfig | None = None
         self.config_path: str | None = None
+        self._corpus_path: str | None = None
         self.worker: FinetuneWorker | None = None
         self.app_settings = AppSettings.load()
         self.app_settings.setup_env_vars()
@@ -220,6 +270,14 @@ class FinetuneWindow(QMainWindow):
         act_open.setShortcut(QKeySequence("Ctrl+O"))
         act_open.triggered.connect(self._browse_config)
         file_menu.addAction(act_open)
+        act_use_corpus = QAction(tr("ft_use_existing_corpus"), self)
+        act_use_corpus.triggered.connect(self._on_use_existing_corpus)
+        file_menu.addAction(act_use_corpus)
+        file_menu.addSeparator()
+        act_html = QAction(tr("ft_menu_export_html"), self)
+        act_html.setShortcut(QKeySequence("Ctrl+H"))
+        act_html.triggered.connect(self._on_export_html)
+        file_menu.addAction(act_html)
         file_menu.addSeparator()
         act_quit = QAction(tr("menu_quit"), self)
         act_quit.setShortcut(QKeySequence("Ctrl+Q"))
@@ -238,6 +296,17 @@ class FinetuneWindow(QMainWindow):
         act_export = QAction(tr("ft_export"), self)
         act_export.triggered.connect(self._on_export)
         actions_menu.addAction(act_export)
+
+        # Language menu (Bug 19)
+        lang_menu = menubar.addMenu(tr("ft_menu_language"))
+        self._lang_act_ru = lang_menu.addAction(tr("ft_menu_lang_ru"))
+        self._lang_act_ru.setCheckable(True)
+        self._lang_act_ru.setChecked(get_language() == "ru")
+        self._lang_act_ru.triggered.connect(lambda: self._change_language("ru"))
+        self._lang_act_en = lang_menu.addAction(tr("ft_menu_lang_en"))
+        self._lang_act_en.setCheckable(True)
+        self._lang_act_en.setChecked(get_language() == "en")
+        self._lang_act_en.triggered.connect(lambda: self._change_language("en"))
 
         # Help menu
         help_menu = menubar.addMenu(tr("menu_help_title"))
@@ -262,6 +331,16 @@ class FinetuneWindow(QMainWindow):
         btn_browse = QPushButton(tr("btn_browse"))
         btn_browse.clicked.connect(self._browse_config)
         cfg_layout.addWidget(btn_browse, 0, 2)
+        # Bug 20: Use existing corpus from pre-training
+        self.btn_use_corpus = QPushButton(tr("ft_use_existing_corpus"))
+        self.btn_use_corpus.clicked.connect(self._on_use_existing_corpus)
+        cfg_layout.addWidget(self.btn_use_corpus, 0, 3)
+        # Show selected corpus path
+        cfg_layout.addWidget(QLabel(tr("ft_existing_corpus")), 1, 0)
+        self.corpus_edit = QLineEdit()
+        self.corpus_edit.setReadOnly(True)
+        self.corpus_edit.setPlaceholderText("auto-detected from config, or pick a file")
+        cfg_layout.addWidget(self.corpus_edit, 1, 1, 1, 3)
         outer.addWidget(cfg_group)
 
         # === 2. Actions ===
@@ -323,7 +402,50 @@ class FinetuneWindow(QMainWindow):
         self.chk_pii = QCheckBox(tr("ft_pii"))
         self.chk_pii.setChecked(True)
         settings_layout.addWidget(self.chk_pii, 3, 2, 1, 2)
+        # Bug 17: Train/Val split
+        self.chk_split = QCheckBox(tr("ft_split_train_val"))
+        self.chk_split.setChecked(True)
+        settings_layout.addWidget(self.chk_split, 4, 0, 1, 2)
+        # Improvement 13: Token-based limits
+        self.chk_token_limits = QCheckBox(tr("ft_token_limits"))
+        self.chk_token_limits.setChecked(False)
+        self.chk_token_limits.setToolTip(tr("ft_token_limits_tooltip"))
+        settings_layout.addWidget(self.chk_token_limits, 4, 2, 1, 2)
         outer.addWidget(settings_group)
+
+        # === Bug 14: Task type checkboxes ===
+        types_group = QGroupBox(tr("ft_task_types"))
+        types_layout = QGridLayout(types_group)
+        # All available task types (must match InstructionGenerator generators)
+        self._all_task_types = [
+            ("article_summary", True),
+            ("code_explanation", True),
+            ("datasheet_specs", True),
+            ("concept_explanation", True),
+            ("bom_generation", True),
+            ("translation", False),  # disabled by default (needs parallel corpora)
+            ("qa_stackexchange", True),
+            ("multi_turn_dialogue", True),
+            ("kicad_to_description", True),
+            ("faq_qa", True),
+        ]
+        self._task_type_checks: dict[str, QCheckBox] = {}
+        for i, (ttype, default_checked) in enumerate(self._all_task_types):
+            row = i // 3
+            col = i % 3
+            cb = QCheckBox(ttype)
+            cb.setChecked(default_checked)
+            types_layout.addWidget(cb, row, col)
+            self._task_type_checks[ttype] = cb
+        # Select all / Clear buttons
+        btn_row = (len(self._all_task_types) + 2) // 3
+        btn_select_all = QPushButton(tr("ft_select_all"))
+        btn_select_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self._task_type_checks.values()])
+        types_layout.addWidget(btn_select_all, btn_row, 0)
+        btn_clear = QPushButton(tr("ft_select_none"))
+        btn_clear.clicked.connect(lambda: [cb.setChecked(False) for cb in self._task_type_checks.values()])
+        types_layout.addWidget(btn_clear, btn_row, 1)
+        outer.addWidget(types_group)
 
         # === 4. Progress ===
         prog_group = QGroupBox(tr("group_progress"))
@@ -351,6 +473,8 @@ class FinetuneWindow(QMainWindow):
         header.setSectionResizeMode(2, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.pairs_table.verticalHeader().setVisible(False)
+        # Bug 13: Double-click to show full pair in a dialog
+        self.pairs_table.doubleClicked.connect(self._on_pair_double_clicked)
         preview_layout.addWidget(self.pairs_table)
         tabs.addTab(preview_tab, tr("ft_tab_preview"))
 
@@ -477,14 +601,39 @@ class FinetuneWindow(QMainWindow):
         self.btn_postprocess.setEnabled(True)
 
     def _on_generate(self):
-        cfg = self._build_effective_config()
-        if cfg is None:
+        # Bug 20: Use existing corpus if specified, else derive from config
+        corpus_file = ""
+        if hasattr(self, '_corpus_path') and self._corpus_path:
+            corpus_file = self._corpus_path
+        else:
+            cfg = self._build_effective_config()
+            if cfg is None:
+                return
+            corpus_file = str(Path(cfg.output.corpus_file).parent / "corpus_final.jsonl")
+            if not Path(corpus_file).exists():
+                corpus_file = cfg.output.corpus_file
+        if not corpus_file or not Path(corpus_file).exists():
+            QMessageBox.warning(self, tr("ft_no_corpus_selected"),
+                                tr("ft_no_corpus_selected_desc"))
             return
-        corpus_file = str(Path(cfg.output.corpus_file).parent / "corpus_final.jsonl")
-        if not Path(corpus_file).exists():
-            corpus_file = cfg.output.corpus_file
-        if not Path(corpus_file).exists():
-            QMessageBox.warning(self, tr("no_corpus"), tr("no_corpus_desc"))
+
+        # Improvement 14: Validate corpus before generation
+        validation = self._validate_corpus(corpus_file)
+        if validation["warnings"]:
+            msg = "\n".join(validation["warnings"])
+            reply = QMessageBox.question(
+                self, tr("ft_generate"),
+                f"{tr('ft_corpus_validation_warning')}\n\n{msg}\n\n{tr('ft_continue_anyway')}",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Bug 14: Get selected task types
+        task_types = self._get_selected_task_types()
+        if task_types is not None and len(task_types) == 0:
+            QMessageBox.warning(self, tr("ft_generate"),
+                "No task types selected. Please select at least one.")
             return
 
         self.pairs_table.setRowCount(0)
@@ -500,12 +649,85 @@ class FinetuneWindow(QMainWindow):
             max_completion=self.spin_max_completion.value(),
             balance=self.chk_balance.isChecked(),
             remove_pii=self.chk_pii.isChecked(),
+            task_types=task_types,
+            use_token_limits=self.chk_token_limits.isChecked(),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.pair_found.connect(self._on_pair_found)
         self.worker.finished_result.connect(self._on_generate_finished)
         self.worker.error.connect(self._on_error)
         self.worker.start()
+
+    def _validate_corpus(self, corpus_file: str) -> dict:
+        """Improvement 14: Validate corpus before generation.
+
+        Checks:
+          1. File exists and is not empty
+          2. Contains valid JSON lines
+          3. Has records with supported source_types
+          4. Has records with non-empty content
+
+        Returns dict with 'warnings' list (empty if all good).
+        """
+        warnings_list = []
+        try:
+            file_size = Path(corpus_file).stat().st_size
+        except OSError:
+            warnings_list.append(f"Cannot stat corpus file: {corpus_file}")
+            return {"warnings": warnings_list, "records": 0}
+
+        if file_size == 0:
+            warnings_list.append("Corpus file is empty (0 bytes).")
+            return {"warnings": warnings_list, "records": 0}
+
+        # Count records and check source_types
+        import json as _json
+        record_count = 0
+        source_types: dict[str, int] = {}
+        empty_content = 0
+        # Supported source_types by at least one generator
+        supported_types = {"html", "stackexchange", "pdf", "github_repo", ""}
+
+        try:
+            with open(corpus_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = _json.loads(line)
+                        record_count += 1
+                        st = record.get("source_type", "")
+                        source_types[st] = source_types.get(st, 0) + 1
+                        if not record.get("content", "").strip():
+                            empty_content += 1
+                    except _json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            warnings_list.append(f"Error reading corpus: {e}")
+            return {"warnings": warnings_list, "records": 0}
+
+        if record_count == 0:
+            warnings_list.append("Corpus file contains no valid JSON records.")
+        else:
+            # Check if any source_type is supported
+            has_supported = any(st in supported_types for st in source_types)
+            if not has_supported:
+                warnings_list.append(
+                    f"No records with supported source_types found. "
+                    f"Found: {list(source_types.keys())}. "
+                    f"Supported: html, stackexchange, pdf, github_repo."
+                )
+            if empty_content > 0:
+                pct = empty_content * 100 / record_count
+                if pct > 50:
+                    warnings_list.append(
+                        f"{empty_content}/{record_count} ({pct:.0f}%) records "
+                        f"have empty content."
+                    )
+
+        return {"warnings": warnings_list, "records": record_count,
+                "source_types": source_types}
 
     def _on_progress(self, current, total, msg):
         if total > 0:
@@ -515,7 +737,10 @@ class FinetuneWindow(QMainWindow):
     def _on_pair_found(self, pair: dict):
         row = self.pairs_table.rowCount()
         self.pairs_table.insertRow(row)
-        self.pairs_table.setItem(row, 0, QTableWidgetItem(pair.get("task_type", "")))
+        # Store full pair in item's UserRole for double-click preview
+        type_item = QTableWidgetItem(pair.get("task_type", ""))
+        type_item.setData(Qt.UserRole, pair)
+        self.pairs_table.setItem(row, 0, type_item)
         self.pairs_table.setItem(row, 1, QTableWidgetItem(pair.get("prompt", "")[:100]))
         self.pairs_table.setItem(row, 2, QTableWidgetItem(pair.get("completion", "")[:100]))
         self.pairs_table.setItem(row, 3, QTableWidgetItem(pair.get("source", "")[:50]))
@@ -565,6 +790,16 @@ class FinetuneWindow(QMainWindow):
             for w in warnings_list:
                 lines.append(f"  ⚠ {w}")
             lines.append("")
+        # Improvement 20: show per-stage execution times
+        stage_times = stats.get("stage_times", {})
+        if stage_times:
+            lines.append("=== Execution times ===")
+            total_time = sum(stage_times.values())
+            for stage, t in stage_times.items():
+                pct = t * 100 / total_time if total_time > 0 else 0
+                lines.append(f"  {stage:22s} {t:7.2f}s  ({pct:5.1f}%)")
+            lines.append(f"  {'TOTAL':22s} {total_time:7.2f}s")
+            lines.append("")
         lines.append("=== Raw stats (JSON) ===")
         lines.append(json.dumps(stats, ensure_ascii=False, indent=2))
 
@@ -596,3 +831,221 @@ class FinetuneWindow(QMainWindow):
 
     def _on_progress_signal(self, current, total, msg):
         self._on_progress(current, total, msg)
+
+    # ============================================================
+    # Bug 13: Double-click pair preview
+    # ============================================================
+
+    def _on_pair_double_clicked(self, index):
+        """Open a dialog showing the full prompt/completion of the clicked pair."""
+        row = index.row()
+        if row < 0:
+            return
+        # Try item's UserRole first (set during _on_pair_found), fall back to _pairs
+        item = self.pairs_table.item(row, 0)
+        pair = item.data(Qt.UserRole) if item else None
+        if pair is None:
+            if not hasattr(self, '_pairs') or row >= len(self._pairs):
+                return
+            pair = self._pairs[row]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("ft_pair_preview"))
+        dlg.resize(800, 600)
+        layout = QVBoxLayout(dlg)
+
+        # Task type + source header
+        header_label = QLabel(
+            f"<b>{pair.get('task_type', '')}</b> &mdash; "
+            f"<a href='{pair.get('source', '')}'>{pair.get('source', '')[:80]}</a>"
+        )
+        header_label.setOpenExternalLinks(True)
+        header_label.setTextFormat(Qt.RichText)
+        header_label.setWordWrap(True)
+        layout.addWidget(header_label)
+
+        # Prompt
+        layout.addWidget(QLabel(f"<b>{tr('ft_prompt_full')}</b>"))
+        prompt_edit = QTextEdit()
+        prompt_edit.setReadOnly(True)
+        prompt_edit.setPlainText(pair.get("prompt", ""))
+        prompt_edit.setMinimumHeight(150)
+        layout.addWidget(prompt_edit)
+
+        # Completion
+        layout.addWidget(QLabel(f"<b>{tr('ft_completion_full')}</b>"))
+        completion_edit = QTextEdit()
+        completion_edit.setReadOnly(True)
+        completion_edit.setPlainText(pair.get("completion", ""))
+        completion_edit.setMinimumHeight(150)
+        layout.addWidget(completion_edit)
+
+        # Conversation (if multi-turn)
+        conv = pair.get("conversation")
+        if conv:
+            layout.addWidget(QLabel(f"<b>{tr('ft_conversation')}</b>"))
+            conv_edit = QTextEdit()
+            conv_edit.setReadOnly(True)
+            conv_text = ""
+            for turn in conv:
+                role = turn.get("role", "?").upper()
+                conv_text += f"=== {role} ===\n{turn.get('content', '')}\n\n"
+            conv_edit.setPlainText(conv_text)
+            conv_edit.setMinimumHeight(100)
+            layout.addWidget(conv_edit)
+
+        # Close button
+        btn_close = QPushButton("OK")
+        btn_close.clicked.connect(dlg.accept)
+        layout.addWidget(btn_close)
+
+        dlg.exec()
+
+    # ============================================================
+    # Bug 14: Get selected task types
+    # ============================================================
+
+    def _get_selected_task_types(self) -> list[str] | None:
+        """Return list of selected task types, or None if all are selected."""
+        selected = [t for t, cb in self._task_type_checks.items() if cb.isChecked()]
+        if len(selected) == len(self._task_type_checks):
+            return None  # all selected = no filter
+        return selected if selected else None
+
+    # ============================================================
+    # Bug 19: Language switcher
+    # ============================================================
+
+    def _change_language(self, lang: str) -> None:
+        """Switch language and rebuild entire UI for full translation."""
+        set_language(lang)
+        self.app_settings.gui.language = lang
+        self.app_settings.save()
+
+        # Clear old menu bar
+        menubar = self.menuBar()
+        menubar.clear()
+
+        # Clear old central widget
+        old_widget = self.centralWidget()
+
+        # Rebuild everything fresh
+        self._build_ui()
+        self._build_menu()
+        self._connect_signals()
+
+        # Delete old widget after new one is set
+        if old_widget:
+            old_widget.deleteLater()
+
+        # Re-apply theme
+        self._apply_theme()
+
+        # Restore config path
+        if self.config_path:
+            self.config_edit.setText(self.config_path)
+        if hasattr(self, '_corpus_path') and self._corpus_path:
+            self.corpus_edit.setText(self._corpus_path)
+
+        # Update language checkboxes
+        self._lang_act_ru.setChecked(lang == "ru")
+        self._lang_act_en.setChecked(lang == "en")
+
+        self._log("INFO", tr("lang_changed_msg"))
+
+    # ============================================================
+    # Bug 20: Use existing corpus from pre-training
+    # ============================================================
+
+    def _on_use_existing_corpus(self):
+        """Let user pick an existing corpus_final.jsonl from pre-training."""
+        # Default directory: try config's output dir, else cwd
+        default_dir = ""
+        if self.config and hasattr(self.config, 'output'):
+            default_dir = str(Path(self.config.output.corpus_file).parent)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("ft_select_corpus_file"), default_dir, tr("ft_corpus_jsonl")
+        )
+        if path:
+            self._corpus_path = path
+            self.corpus_edit.setText(path)
+            self._log("INFO", f"Selected corpus: {path}")
+
+    # ============================================================
+    # Bug 17/18: Export with train/val split + HTML report
+    # ============================================================
+
+    def _on_export(self):
+        if not hasattr(self, '_pairs') or not self._pairs:
+            QMessageBox.warning(self, tr("ft_export"), tr("ft_no_pairs"))
+            return
+
+        output_dir = QFileDialog.getExistingDirectory(self, tr("ft_export_dir"))
+        if not output_dir:
+            return
+
+        from .postproc.format_converter import FormatConverter
+        from .postproc.instruction_generator import InstructionGenerator
+
+        # Save raw pairs
+        pairs_file = Path(output_dir) / "instruction_pairs.jsonl"
+        InstructionGenerator().save(self._pairs, pairs_file)
+
+        if self.chk_split.isChecked():
+            # Bug 17: Train/Val split
+            try:
+                results = FormatConverter.split_dataset(
+                    pairs_file, output_dir, val_ratio=0.1, stratify_by_type=True
+                )
+                summary_lines = []
+                for fmt, r in results.items():
+                    if fmt == "_summary":
+                        continue
+                    if "error" in r:
+                        summary_lines.append(f"  {fmt}: ERROR - {r['error']}")
+                    else:
+                        summary_lines.append(
+                            f"  {fmt}: train={r['train']['count']}, val={r['val']['count']}"
+                        )
+                summary = "\n".join(summary_lines)
+                self._log("INFO", f"Exported with train/val split to {output_dir}:\n{summary}")
+                QMessageBox.information(self, tr("ft_export"),
+                    f"{tr('ft_exported_with_split')}\n\n{output_dir}\n\n{summary}")
+            except Exception as e:
+                self._log("ERROR", f"Split failed: {e}")
+                # Fallback to non-split export
+                results = FormatConverter.convert_all(pairs_file, output_dir)
+                summary = "\n".join(f"  {fmt}: {r.get('count', 0)} pairs" for fmt, r in results.items())
+                QMessageBox.information(self, tr("ft_export"),
+                    f"Exported to:\n{output_dir}\n\n{summary}")
+        else:
+            # Convert to all formats (no split)
+            results = FormatConverter.convert_all(pairs_file, output_dir)
+            summary = "\n".join(f"  {fmt}: {r.get('count', 0)} pairs" for fmt, r in results.items())
+            self._log("INFO", f"Exported to {output_dir}:\n{summary}")
+            QMessageBox.information(self, tr("ft_export"),
+                f"Exported to:\n{output_dir}\n\n{summary}")
+
+    def _on_export_html(self):
+        """Bug 18: Generate HTML statistics report."""
+        if not hasattr(self, '_pairs') or not self._pairs:
+            QMessageBox.warning(self, tr("ft_html_report"), tr("ft_no_pairs"))
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("ft_html_report"), "dataset_report.html",
+            "HTML (*.html *.htm)"
+        )
+        if not path:
+            return
+
+        from .postproc.stats_report import generate_html_report
+        try:
+            generate_html_report(self._pairs, Path(path), self._stats)
+            self._log("INFO", f"{tr('ft_html_report_saved')}: {path}")
+            QMessageBox.information(self, tr("ft_html_report"),
+                f"{tr('ft_html_report_saved')}:\n{path}")
+        except Exception as e:
+            self._log("ERROR", f"HTML report failed: {e}")
+            QMessageBox.critical(self, tr("ft_html_report"), str(e))

@@ -13,20 +13,16 @@ Usage:
     from corpus_builder.postproc.token_utils import count_tokens, estimate_tokens
     n = count_tokens("Hello world")              # tiktoken if available
     n = estimate_tokens("Hello world", lang="en")  # heuristic always
+    n = count_tokens_batch(["text1", "text2"])   # batch mode (faster)
 """
 from __future__ import annotations
 
 import re
-from functools import lru_cache
 from typing import Literal
 
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
-
-# Lazy-loaded tiktoken encoder
-_ENCODER = None
-_TIKTOKEN_AVAILABLE = None  # None = unknown, True/False after first probe
 
 # Language-specific char-per-token ratios (heuristic fallback).
 # Based on empirical measurement of cl100k_base BPE on technical text:
@@ -62,22 +58,33 @@ def _detect_lang_simple(text: str) -> Literal["en", "ru", "zh", "ja", "ko", "mix
     return "en"
 
 
-@lru_cache(maxsize=1)
+# ============================================================
+# Eager encoder loading at module level (Improvement 15)
+# ============================================================
+# Previously _get_encoder() was called on every count_tokens() invocation,
+# with @lru_cache(maxsize=1) to avoid re-loading. But lru_cache still has
+# overhead per call. For 100K+ pairs, this adds up. Now we load the encoder
+# ONCE at module import time (if tiktoken is available) and store it in a
+# module-level variable. count_tokens() does a simple None check.
+_ENCODER = None
+_TIKTOKEN_AVAILABLE = False
+
+try:
+    import tiktoken as _tiktoken
+    _ENCODER = _tiktoken.get_encoding("cl100k_base")
+    _TIKTOKEN_AVAILABLE = True
+    log.debug("tiktoken loaded at module import: cl100k_base")
+except Exception as _e:
+    _TIKTOKEN_AVAILABLE = False
+    log.info(f"tiktoken unavailable ({_e}); falling back to char-based estimate")
+
+
 def _get_encoder():
-    """Try to load tiktoken; return encoder or None."""
-    global _TIKTOKEN_AVAILABLE
-    if _TIKTOKEN_AVAILABLE is False:
-        return None
-    try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        _TIKTOKEN_AVAILABLE = True
-        log.debug("tiktoken loaded: cl100k_base")
-        return enc
-    except Exception as e:
-        _TIKTOKEN_AVAILABLE = False
-        log.info(f"tiktoken unavailable ({e}); falling back to char-based estimate")
-        return None
+    """Return the module-level encoder, or None if tiktoken unavailable.
+
+    Kept for backward compatibility with code that calls _get_encoder().
+    """
+    return _ENCODER
 
 
 def count_tokens(text: str) -> int:
@@ -87,10 +94,32 @@ def count_tokens(text: str) -> int:
     """
     if not text:
         return 0
-    enc = _get_encoder()
-    if enc is not None:
-        return len(enc.encode(text))
+    if _ENCODER is not None:
+        return len(_ENCODER.encode(text))
     return estimate_tokens(text)
+
+
+def count_tokens_batch(texts: list[str]) -> list[int]:
+    """Return token counts for a list of texts.
+
+    Uses tiktoken.encode_batch() if available (faster than calling
+    encode() one-by-one for large lists), otherwise falls back to
+    per-text count_tokens().
+    """
+    if not texts:
+        return []
+    if _ENCODER is not None:
+        # tiktoken supports encode_batch for bulk encoding
+        if hasattr(_ENCODER, "encode_batch"):
+            try:
+                encoded = _ENCODER.encode_batch(texts)
+                return [len(e) for e in encoded]
+            except Exception as e:
+                log.debug(f"encode_batch failed ({e}), falling back to per-text")
+        # Fallback: encode one by one (still uses cached encoder)
+        return [len(_ENCODER.encode(t)) for t in texts]
+    # No tiktoken — use heuristic
+    return [estimate_tokens(t) for t in texts]
 
 
 def estimate_tokens(text: str, lang: str | None = None) -> int:
@@ -137,4 +166,4 @@ def passes_token_limits(
 
 def is_tiktoken_available() -> bool:
     """Public probe for tests / UI display."""
-    return _get_encoder() is not None
+    return _TIKTOKEN_AVAILABLE
