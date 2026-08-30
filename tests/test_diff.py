@@ -4,13 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from corpus_builder.diff import diff_corpora, _load_corpus
+from corpus_builder.diff import diff_corpora
 
 
 def _write_corpus(path: Path, records: list[dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
 
 
 def test_diff_added(tmp_path):

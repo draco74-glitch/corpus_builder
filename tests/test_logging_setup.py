@@ -6,17 +6,10 @@
   - функция is_frozen возвращает False в обычном режиме
 """
 import sys
-import os
-from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from corpus_builder import logging_setup
-from corpus_builder.logging_setup import (
-    setup_logging, get_logger, is_frozen, get_log_dir,
-    _has_file_handler, _configured
-)
+from corpus_builder.logging_setup import get_log_dir, get_logger, is_frozen, setup_logging
 
 
 def test_is_frozen_returns_false_in_normal_mode():

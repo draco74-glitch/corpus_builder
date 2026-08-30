@@ -16,14 +16,14 @@ One-dir архитектура позволяет обновлять отдел�
 """
 from __future__ import annotations
 
-import json
+import hashlib
 import os
 import shutil
 import sys
 import tempfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import requests
 
@@ -36,13 +36,77 @@ GITHUB_API_LATEST = "https://api.github.com/repos/{repo}/releases/latest"
 GITHUB_API_TAGS = "https://api.github.com/repos/{repo}/releases/tags/{tag}"
 
 
+class UpdateIntegrityError(Exception):
+    """Архив обновления не прошёл проверку целостности (C7)."""
+
+
+class UnsafeArchiveEntry(ValueError):
+    """Элемент архива пытается записать файл вне целевого каталога (Zip Slip)."""
+
+
+def verify_member_path(target_dir: Path, member_name: str,
+                       allowed_extensions: tuple[str, ...] = (".py",)) -> Path:
+    """Вернуть безопасный путь для элемента архива или поднять UnsafeArchiveEntry.
+
+    Проверяем: не абсолютный, безdrive-letter, без `..`, расширение из
+    разрешённого списка, и итоговый resolve()-путь лежит ВНУТРИ target_dir.
+    Раньше `_apply_patch` делал `target_dir / rel_path` без любой проверки, и
+    член вида `corpus_builder/../../../../evil.py` записывался за пределы
+    каталога приложения.
+    """
+    name = member_name.replace("\\", "/")
+    pure = Path(name)
+    if pure.is_absolute() or (len(pure.parts) > 1 and pure.parts[0].endswith(":")):
+        raise UnsafeArchiveEntry(f"absolute member path: {member_name!r}")
+    if ".." in pure.parts:
+        raise UnsafeArchiveEntry(f"parent traversal in member path: {member_name!r}")
+    if allowed_extensions and pure.suffix.lower() not in allowed_extensions:
+        raise UnsafeArchiveEntry(
+            f"member {member_name!r} is not an updatable file type "
+            f"(allowed: {allowed_extensions})"
+        )
+    base = target_dir.resolve()
+    dest = (base / name).resolve()
+    try:
+        dest.relative_to(base)
+    except ValueError:
+        raise UnsafeArchiveEntry(f"member escapes target dir: {member_name!r}") from None
+    return dest
+
+
+def sha256_of_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _parse_digest_text(text: str, asset_name: str) -> str | None:
+    """Вытащить hex-дайджест из sidecar-файла (.sha256).
+
+    Поддерживаем форматы: `<hex>`, `<hex>  file.zip`, `sha256=<hex>`.
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        token = line.split()[0] if line.split() else ""
+        token = token.split("=")[-1].strip()
+        if len(token) == 64 and all(c in "0123456789abcdefABCDEF" for c in token):
+            return token.lower()
+    log.debug(f"No sha256 digest found in sidecar for {asset_name}")
+    return None
+
+
 class AutoUpdater:
     """Проверка и применение авто-обновлений через GitHub Releases.
 
-    Attributes:
+    NOTE: GUI использует `CommitUpdater` (файлы из git-дерева); этот класс —
+    путь «релизних ассетов», вызывается только явно/из инструментов сборки.
+
+    Атрибуты:
         repo: GitHub репозиторий в формате "owner/repo"
         current_version: текущая версия программы (например, "0.2.0")
         update_channel: "stable" или "pre-release"
+        require_digest: проверять sha256 перед установкой (см. C7). Если True
+            (по умолчанию) и дайджест недоступен — обновление НЕ применяется.
     """
 
     def __init__(
@@ -50,10 +114,12 @@ class AutoUpdater:
         repo: str = "draco74-glitch/corpus_builder",
         current_version: str = "0.2.0",
         update_channel: str = "stable",
+        require_digest: bool = True,
     ):
         self.repo = repo
         self.current_version = current_version
         self.update_channel = update_channel
+        self.require_digest = require_digest
         self._latest_release: dict | None = None
 
     def check_for_updates(self) -> dict | None:
@@ -105,7 +171,7 @@ class AutoUpdater:
     def download_and_apply(
         self,
         asset_name: str | None = None,
-        on_progress: "Callable[[int, int], None] | None" = None,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> bool:
         """Скачать и применить обновление.
 
@@ -152,6 +218,7 @@ class AutoUpdater:
         total_size = target_asset.get("size", 0)
         log.info(f"Downloading {target_asset['name']} ({total_size} bytes)...")
 
+        tmp_dir: Path | None = None      # cleanup должен работать и при раннем сбое
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="corpus_builder_update_"))
             zip_path = tmp_dir / target_asset["name"]
@@ -159,15 +226,44 @@ class AutoUpdater:
             r = requests.get(download_url, stream=True, timeout=120)
             r.raise_for_status()
 
+            digest = self._fetch_digest_for(asset_name=target_asset["name"],
+                                            browser_url=download_url)
+
+            hasher = hashlib.sha256()
             downloaded = 0
             with open(zip_path, "wb") as f:
                 for chunk in r.iter_content(8192):
                     f.write(chunk)
+                    hasher.update(chunk)
                     downloaded += len(chunk)
                     if on_progress:
                         on_progress(downloaded, total_size)
 
             log.info(f"Downloaded {downloaded} bytes to {zip_path}")
+
+            # C7: проверка целостности ДО записи каких-либо файлов на диск.
+            actual = hasher.hexdigest()
+            if digest is None:
+                if self.require_digest:
+                    raise UpdateIntegrityError(
+                        f"no sha256 digest published for {target_asset['name']} — "
+                        f"refusing to install unverified code "
+                        f"(pass require_digest=False to override)"
+                    )
+                log.warning(f"Update installed WITHOUT integrity verification: "
+                            f"no .sha256 sidecar for {target_asset['name']}")
+            elif actual != digest:
+                raise UpdateIntegrityError(
+                    f"sha256 mismatch for {target_asset['name']}: "
+                    f"expected {digest}, got {actual}"
+                )
+            else:
+                log.info(f"sha256 verified: {actual[:16]}…")
+
+            if total_size and downloaded != total_size:
+                raise UpdateIntegrityError(
+                    f"truncated download: got {downloaded} of {total_size} bytes"
+                )
 
             # Применить
             if self._is_patch_zip(target_asset["name"]):
@@ -175,72 +271,105 @@ class AutoUpdater:
             else:
                 return self._apply_full_update(zip_path, tmp_dir)
 
+        except UpdateIntegrityError as e:
+            log.error(f"Update rejected: {e}")
+            return False
         except Exception as e:
             log.error(f"Failed to download/apply update: {e}")
             return False
         finally:
-            try:
+            if tmp_dir is not None:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
-            except Exception:
-                pass
+
+    def _fetch_digest_for(self, asset_name: str, browser_url: str) -> str | None:
+        """Скачать sidecar `<asset>.sha256` с того же релиза, если он опубликован."""
+        try:
+            r = requests.get(f"{browser_url}.sha256", timeout=30,
+                             headers={"Accept": "application/octet-stream"})
+            if r.status_code == 200 and r.text.strip():
+                return _parse_digest_text(r.text, asset_name)
+        except Exception as e:
+            log.debug(f"digest fetch failed for {asset_name}: {e}")
+        return None
 
     def _is_patch_zip(self, name: str) -> bool:
         """Определить, является ли ZIP патчем (только .py файлы) или полным дистрибутивом."""
         return name.lower() in ("patch.zip", "update.zip")
 
-    def _apply_patch(self, zip_path: Path) -> bool:
+    def _apply_patch(self, zip_path: Path, target_dir: Path | None = None) -> bool:
         """Применить патч — распаковать .py файлы в _internal/corpus_builder/.
 
         One-dir mode: Python-файлы находятся в _internal/corpus_builder/
         рядом с .exe. Можно заменить их без пересборки.
-        """
-        if not self._is_frozen():
-            log.warning("Patch can only be applied in frozen (PyInstaller) mode")
-            return False
 
-        target_dir = self._get_internal_corpus_builder_dir()
+        Схема (C7): сначала ВЕРИФИКАЦИЯ всех путей архива и распаковка в
+        staging-каталог, затем бэкап и перенос. Архив с обходом каталога
+        отклоняется целиком, до первого записи на диск.
+
+        `target_dir` позволяет вызвать метод не только из frozen-сборки
+        (используется тестами); в обычном рантайме каталог ищется сам.
+        """
+        if target_dir is None:
+            if not self._is_frozen():
+                log.warning("Patch can only be applied in frozen (PyInstaller) mode")
+                return False
+            target_dir = self._get_internal_corpus_builder_dir()
         if not target_dir or not target_dir.exists():
             log.error(f"Cannot find target directory: {target_dir}")
             return False
 
         log.info(f"Applying patch to {target_dir}...")
 
+        staging = Path(tempfile.mkdtemp(prefix="corpus_builder_patch_"))
+        backup_dir = target_dir.parent / "corpus_builder_backup"
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                # Создаём backup
-                backup_dir = target_dir.parent / "corpus_builder_backup"
-                if backup_dir.exists():
-                    shutil.rmtree(backup_dir)
-                shutil.copytree(target_dir, backup_dir)
-                log.info(f"Backup created: {backup_dir}")
-
-                # Распаковываем файлы
-                extracted = 0
-                for name in zf.namelist():
-                    if name.endswith("/"):
-                        continue
-                    # Убираем префикс corpus_builder/ если есть
-                    rel_path = name
-                    if rel_path.startswith("corpus_builder/"):
-                        rel_path = rel_path[len("corpus_builder/"):]
-
-                    target_file = target_dir / rel_path
-                    target_file.parent.mkdir(parents=True, exist_ok=True)
-
-                    with zf.open(name) as src, open(target_file, "wb") as dst:
+                members = [n for n in zf.namelist() if not n.endswith("/")]
+                # 1. Прокинуть пути ДО распаковки: ни одного побора за пределы
+                for name in members:
+                    rel = name[len("corpus_builder/"):] if name.startswith("corpus_builder/") else name
+                    verify_member_path(staging, rel)
+                if not members:
+                    log.warning("Patch ZIP is empty, nothing applied")
+                    return False
+                # 2. Распаковать во staging
+                for name in members:
+                    rel = name[len("corpus_builder/"):] if name.startswith("corpus_builder/") else name
+                    src = zf.open(name)
+                    dest = staging / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with src, open(dest, "wb") as dst:
                         dst.write(src.read())
-                    extracted += 1
-                    log.debug(f"Updated: {rel_path}")
+                extracted = len(members)
 
-                log.info(f"Patch applied: {extracted} files updated")
-                log.info("Please restart CorpusBuilder to apply changes.")
-                return True
+            # 3. Бэкап + перенос поверх текущей версии
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            shutil.copytree(target_dir, backup_dir)
+            log.info(f"Backup created: {backup_dir}")
 
+            applied = 0
+            for name in members:
+                rel = name[len("corpus_builder/"):] if name.startswith("corpus_builder/") else name
+                src = staging / rel
+                dest = target_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                applied += 1
+                log.debug(f"Updated: {rel}")
+
+            log.info(f"Patch applied: {applied} files updated (of {extracted} in archive)")
+            log.info("Please restart CorpusBuilder to apply changes.")
+            return True
+
+        except (UnsafeArchiveEntry, UpdateIntegrityError) as e:
+            # архив отвергнут целиком — бэкап не создавался, восстанавливать нечего
+            log.error(f"Patch rejected, nothing was written: {e}")
+            return False
         except Exception as e:
             log.error(f"Failed to apply patch: {e}")
             # Восстанавливаем backup
             try:
-                backup_dir = target_dir.parent / "corpus_builder_backup"
                 if backup_dir.exists():
                     shutil.rmtree(target_dir)
                     shutil.copytree(backup_dir, target_dir)
@@ -248,6 +377,8 @@ class AutoUpdater:
             except Exception:
                 pass
             return False
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def _apply_full_update(self, zip_path: Path, tmp_dir: Path) -> bool:
         """Применить полное обновление — распаковать весь ZIP-дистрибутив.
@@ -383,9 +514,46 @@ class AutoUpdater:
 # Commit-based updates: подтягивание .py файлов с main ветки
 # ============================================================
 
-GITHUB_API_COMMITS = "https://api.github.com/repos/{repo}/commits?sha=main&per_page=1"
+GITHUB_API_COMMITS = "https://api.github.com/repos/{repo}/commits?sha={branch}&per_page=1"
 GITHUB_API_CONTENTS = "https://api.github.com/repos/{repo}/contents/{path}?ref={ref}"
 GITHUB_API_TREE = "https://api.github.com/repos/{repo}/git/trees/{sha}?recursive=1"
+
+
+def _looks_like_python_module(rel_path: str, content: bytes) -> bool:
+    """Проверить, что downloaded payload действительно Python-модуль.
+
+    GitHub Contents API отдаёт base64; при обрезке/ошибке вместо кода может
+    прилететь HTML-страница или мусор, который после перезапуска приложения
+    всплывёт SyntaxError'ом в random-ном месте. Проверяем дешёвым parse.
+    """
+    if not rel_path.endswith(".py"):
+        return False
+    if b"<!DOCTYPE" in content[:200] or b"<html" in content[:200].lower():
+        return False
+    import ast
+    try:
+        ast.parse(content.decode("utf-8"))
+        return True
+    except (SyntaxError, UnicodeDecodeError, ValueError):
+        return False
+
+
+def _atomic_write(dest: Path, content: bytes) -> bool:
+    """Записать файл атомарно (tmp + os.replace). True при успехе."""
+    import os
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.parent / (dest.name + ".new.tmp")
+        tmp.write_bytes(content)
+        os.replace(tmp, dest)
+        return True
+    except OSError as e:
+        log.warning(f"Cannot write {dest}: {e}")
+        try:
+            (dest.parent / (dest.name + ".new.tmp")).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
 
 class CommitUpdater:
@@ -461,7 +629,7 @@ class CommitUpdater:
         иначе None.
         """
         try:
-            url = GITHUB_API_COMMITS.format(repo=self.repo)
+            url = GITHUB_API_COMMITS.format(repo=self.repo, branch=self.branch)
             r = requests.get(url, headers=self._get_headers(), timeout=15)
             if r.status_code == 403:
                 log.warning("GitHub API rate limit hit for /commits")
@@ -576,14 +744,23 @@ class CommitUpdater:
     def apply_commit_update(
         self,
         on_progress=None,
+        verify_source: bool = True,
     ) -> dict:
         """Скачать и применить обновление из последнего коммита.
 
         Скачивает все .py файлы из corpus_builder/ и заменяет их
         в _internal/corpus_builder/ (one-dir mode) или в исходной папке (dev mode).
 
+        Правила целостности (C7):
+          * маркер «установленного» коммита двигается ТОЛЬКО когда обновление
+            применилось целиком (`failed == 0`); иначе часть файлов осталась от
+            старого коммита и программа смешивает версии навсегда;
+          * частичный сбой откатывается на бэкап, чтобы не оставить mixed state;
+          * каждый файл проверяется как валидный Python (`ast.parse`) и пишется
+            атомарно (tmp + os.replace).
+
         Возвращает dict с результатом:
-            {success: bool, files_updated: int, files_failed: int, sha: str}
+            {success, files_updated, files_failed, failed_files, sha, short_sha}
         """
         if not self._latest_sha:
             info = self.check_for_commit_updates()
@@ -619,6 +796,7 @@ class CommitUpdater:
         updated = 0
         failed = 0
         failed_files: list[str] = []
+        invalid_files: list[str] = []
 
         for i, rel_path in enumerate(py_files):
             content = self._download_file_from_github(
@@ -629,36 +807,54 @@ class CommitUpdater:
                 failed_files.append(rel_path)
                 continue
 
-            # Создаём подпапки если нужно
-            target_file = target_dir / rel_path
-            target_file.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                target_file.write_bytes(content)
-                updated += 1
-            except Exception as e:
-                log.warning(f"Cannot write {rel_path}: {e}")
+            if verify_source and not _looks_like_python_module(rel_path, content):
+                # страница ошибки/обрезанный base64: не должен попасть в ран
+                log.warning(f"Skipped non-Python payload: {rel_path}")
+                invalid_files.append(rel_path)
                 failed += 1
                 failed_files.append(rel_path)
+                continue
+
+            if not _atomic_write(target_dir / rel_path, content):
+                failed += 1
+                failed_files.append(rel_path)
+                continue
+            updated += 1
 
         if on_progress:
             on_progress(len(py_files), len(py_files),
                        f"Готово: обновлено {updated}, ошибок {failed}")
 
-        if updated > 0:
+        complete = updated > 0 and failed == 0
+        restored = False
+        if complete:
             self._save_last_known_sha(sha)
-            log.info(f"Update applied: {updated} files updated, {failed} failed")
+            log.info(f"Update applied: {updated} files updated")
         else:
-            log.warning("No files were updated")
+            # НЕ двигаем маркер: повторный запуск предложит то же обновление и
+            # доведёт его до конца (раньше при updated>0 маркер уходил вперёд).
+            log.warning(
+                f"Update incomplete ({updated} updated, {failed} failed) — "
+                f"commit marker kept at previous version"
+            )
+            if failed_files:
+                restored = self.restore_backup()
+            log.info("Rolled back to backup" if restored else
+                     "Left files in place; re-run update to finish")
 
-        return {
-            "success": updated > 0,
+        result = {
+            "success": complete,
             "files_updated": updated,
             "files_failed": failed,
             "failed_files": failed_files,
+            "invalid_files": invalid_files,
+            "rolled_back": restored,
             "sha": sha,
             "short_sha": sha[:8],
         }
+        if not complete:
+            result["error"] = f"partial update: {failed} of {len(py_files)} files failed"
+        return result
 
     def _get_target_dir(self) -> Path | None:
         """Определить папку corpus_builder/ для обновления.
@@ -680,24 +876,27 @@ class CommitUpdater:
             target.mkdir(parents=True, exist_ok=True)
             return target
         else:
-            # Dev mode: ищем corpus_builder/ в cwd или рядом
-            cwd = Path.cwd()
-            if (cwd / "corpus_builder").is_dir():
-                return cwd / "corpus_builder"
-            # Если запускаем из corpus_builder/
-            if cwd.name == "corpus_builder":
-                return cwd
-            return None
+            # Dev mode: обновляем ТОТ же путь, из которого импортирован пакет,
+            # а не `cwd` — иначе запуск `python -m corpus_builder.gui` из
+            # произвольной директории перезаписывал бы random-ный каталог
+            # `corpus_builder/` рядом с cwd (или падал с "не определено").
+            import corpus_builder as _pkg
+            pkg_dir = Path(_pkg.__file__).resolve().parent
+            return pkg_dir if pkg_dir.is_dir() else None
+
+    def backup_dir(self) -> Path | None:
+        """Каталог с бэкапом последней успешной версии (или None)."""
+        target = self._get_target_dir()
+        return (target.parent / "corpus_builder_backup") if target else None
 
     def restore_backup(self) -> bool:
-        """Восстановить из backup если обновление сломало программу."""
-        if getattr(sys, "frozen", False):
-            exe_dir = Path(sys.executable).parent
-            backup_dir = exe_dir / "_internal" / "corpus_builder_backup"
-        else:
-            backup_dir = Path.cwd() / "corpus_builder_backup"
+        """Восстановить из backup если обновление сломало программу.
 
-        if not backup_dir.exists():
+        Каталог ищем так же, как при создании бэкапа (через `_get_target_dir`),
+        иначе frozen/dev-режимы смотрели в разные места и откат не работал.
+        """
+        backup_dir = self.backup_dir()
+        if backup_dir is None or not backup_dir.exists():
             log.warning("No backup found")
             return False
 

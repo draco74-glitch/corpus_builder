@@ -1,11 +1,10 @@
 """Incremental dedup: LSH-индекс сохраняется между запусками."""
 from __future__ import annotations
 
-import json
 import os
 import pickle
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from datasketch import MinHash, MinHashLSH
 

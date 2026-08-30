@@ -14,13 +14,25 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QFormLayout,
-    QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox, QTextEdit,
-    QPushButton, QLabel, QFileDialog, QMessageBox, QGroupBox, QSlider,
-    QButtonGroup, QRadioButton, QScrollArea,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .app_settings import AppSettings
@@ -202,14 +214,30 @@ class SettingsDialog(QDialog):
         self.spin_max_file_size.setSuffix(" МБ")
         layout.addRow("Макс. размер файла:", self.spin_max_file_size)
 
+        self.edit_contact_email = QLineEdit()
+        self.edit_contact_email.setPlaceholderText(
+            "you@example.org — просят Crossref/Wikipedia (mailto в User-Agent)")
+        layout.addRow("Контакт для API:", self.edit_contact_email)
+
         self.chk_use_cache = QCheckBox(tr("st_use_cache"))
         self.chk_use_cache.setChecked(True)
         layout.addRow(self.chk_use_cache)
+
+        self.chk_revalidate = QCheckBox("Сверять размер кэшированных файлов с сервером (HEAD)")
+        self.chk_revalidate.setToolTip(
+            "Выключено: ранее скачанный PDF используется вечно, даже если на сервере "
+            "лежит новая версия того же URL")
+        layout.addRow(self.chk_revalidate)
 
         self.spin_cache_ttl = QSpinBox()
         self.spin_cache_ttl.setRange(1, 720)
         self.spin_cache_ttl.setSuffix(" часов")
         layout.addRow("Срок жизни кэша:", self.spin_cache_ttl)
+
+        self.edit_contact_email = QLineEdit()
+        self.edit_contact_email.setPlaceholderText(
+            "you@example.org — нужен для Crossref/Wikipedia («polite pool»)")
+        layout.addRow("Контакт для API:", self.edit_contact_email)
 
         self.chk_robots = QCheckBox(tr("st_robots"))
         self.chk_robots.setChecked(True)
@@ -594,7 +622,10 @@ class SettingsDialog(QDialog):
         self.spin_timeout.setValue(s.crawl.request_timeout)
         self.spin_delay.setValue(s.crawl.request_delay)
         self.spin_max_file_size.setValue(s.crawl.max_file_size_mb)
+        self.edit_contact_email.setText(s.crawl.contact_email)
         self.chk_use_cache.setChecked(s.crawl.use_cache)
+        self.edit_contact_email.setText(s.crawl.contact_email)
+        self.chk_revalidate.setChecked(s.crawl.revalidate_cached_files)
         self.spin_cache_ttl.setValue(s.crawl.cache_ttl_hours)
         self.chk_robots.setChecked(s.crawl.respect_robots_txt)
         self.chk_browser_headers.setChecked(s.crawl.use_browser_headers)
@@ -687,11 +718,14 @@ class SettingsDialog(QDialog):
         s.crawl.request_delay = self.spin_delay.value()
         s.crawl.max_file_size_mb = self.spin_max_file_size.value()
         s.crawl.use_cache = self.chk_use_cache.isChecked()
+        s.crawl.revalidate_cached_files = self.chk_revalidate.isChecked()
         s.crawl.cache_ttl_hours = self.spin_cache_ttl.value()
         s.crawl.respect_robots_txt = self.chk_robots.isChecked()
         s.crawl.use_browser_headers = self.chk_browser_headers.isChecked()
         s.crawl.use_proxy = self.chk_use_proxy.isChecked()
         s.crawl.proxy_list = self.edit_proxy_list.toPlainText()
+        s.crawl.contact_email = self.edit_contact_email.text().strip()
+        s.crawl.contact_email = self.edit_contact_email.text().strip()
         s.crawl.save_checkpoint_every = self.spin_checkpoint.value()
 
         # HTML
@@ -815,6 +849,7 @@ class SettingsDialog(QDialog):
             return
         try:
             import json
+
             from .app_settings import AppSettings
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)

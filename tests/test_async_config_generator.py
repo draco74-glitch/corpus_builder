@@ -1,19 +1,13 @@
 """Тесты на асинхронные генераторы config.yaml (Улучшения 1-7)."""
 import asyncio
-import json
-from pathlib import Path
 from unittest import mock
-
-import pytest
 
 from corpus_builder.async_config_generator import (
     ProgressTracker,
-    extract_links_fast,
     async_seed_crawl_depth,
-    crawl_excel_async,
     crawl_excel_async_sync,
+    extract_links_fast,
 )
-
 
 # ============================================================
 # Улучшение 6: ProgressTracker с ETA
@@ -221,8 +215,9 @@ def test_async_seed_crawl_progress_callback():
 
 def test_url_cache_reuses_html():
     """async_fetch_html с url_cache переиспользует HTML."""
-    from corpus_builder.async_config_generator import async_fetch_html
     import aiohttp
+
+    from corpus_builder.async_config_generator import async_fetch_html
 
     cache: dict[str, str] = {}
     cache["https://example.com/test"] = "<html>cached</html>"
@@ -242,7 +237,6 @@ def test_url_cache_reuses_html():
 def test_url_cache_stores_after_fetch():
     """После запроса HTML сохраняется в кэш."""
     # Этот тест не делает реальный сетевой запрос, проверяем логику
-    from corpus_builder.async_config_generator import async_fetch_html
 
     cache: dict[str, str] = {}
     # Симулируем, что в кэше нет URL — функция попытается сделать запрос,

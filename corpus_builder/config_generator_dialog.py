@@ -10,36 +10,46 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
-from PySide6.QtGui import QColor, QFont, QTextCursor, QDesktopServices
+from PySide6.QtCore import QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
-    QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar, QTextEdit,
-    QTableWidget, QTableWidgetItem, QTabWidget, QCheckBox, QSpinBox, QComboBox,
-    QMessageBox, QGroupBox, QSplitter, QHeaderView, QStatusBar, QStyle,
-    QToolButton, QSizePolicy, QWidget, QListWidget, QListWidgetItem, QScrollArea,
-    QButtonGroup, QRadioButton, QSlider, QFrame
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .app_settings import AppSettings
-from .settings_dialog import SettingsDialog
 from .config_generator import (
     build_config,
-    crawl_excel_with_depth,
     from_excel,
     from_github_topics,
     from_stackexchange_tags,
     save_template_xlsx,
 )
-from .logging_setup import get_logger
 from .gui_improvements import tr
+from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
@@ -132,7 +142,7 @@ class ExcelGenWorker(QThread):
                     should_stop=self.should_stop,
                     skip_crawl=self.skip_crawl,
                 )
-            except Exception as async_err:
+            except Exception:
                 # Fallback на синхронную версию если async не работает
                 # (например, в PyInstaller frozen режиме asyncio может не работать)
                 from .config_generator import crawl_excel_with_depth
@@ -235,7 +245,7 @@ class ConfigGeneratorDialog(QDialog):
 
     def _build_menu(self) -> None:
         """Создать меню в мастере config.yaml (заглушка для совместимости)."""
-        pass  # Меню создаётся через кнопки внизу диалога
+        # Меню создаётся через кнопки внизу диалога
 
     def _open_settings(self) -> None:
         """Открыть диалог настроек."""
@@ -763,7 +773,6 @@ class ConfigGeneratorDialog(QDialog):
         self.progress_label.setText("Поиск статей Wikipedia...")
 
         # Используем отдельный поток для поиска
-        from .crawlers.base import BaseCrawler
         class WikiWorker(QThread):
             progress = Signal(int, int, str)
             url_found = Signal(dict)

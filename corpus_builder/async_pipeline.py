@@ -1,24 +1,31 @@
 """Асинхронный пайплайн краулинга для ускорения сбора корпуса.
 
-В отличие от синхронного pipeline.run_crawl, обрабатывает несколько URL
-параллельно — при этом соблюдая per-domain rate-limit через asyncio.Semaphore.
+В отличие от синхронного `pipeline.run_crawl`, обрабатывает несколько URL
+параллельно — при этом соблюдая per-domain rate-limit через
+`asyncio.Semaphore` + общий `RateLimiter`.
 
 Ускорение: 4-8 раз для смешанных доменов (без нарушения вежливости).
+
+Что гарантирует общая сборка контекста (I1):
+  * одна Session из `build_crawl_context` → настроенный User-Agent, пул
+    соединений, повторы на 429/5xx, HTTP-кэш и прокси-ротация;
+  * `RateLimiter` (задержка между запросами к домену), а не только семафор;
+  * `per_url_timeout_minutes` — зависший URL не блокирует ран;
+  * `save_checkpoint_every` — периодический save состояния;
+  * `should_stop()` — остановка в mid-run, а не только «не начинать новые».
 """
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-from collections import defaultdict
-from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlparse
 
-import aiohttp
-
 from .logging_setup import get_logger
-from .models import AppConfig, CorpusRecord, ErrorRecord
+from .models import AppConfig, CorpusRecord, ErrorRecord, SourceItem
+from .pipeline import build_crawl_context
+from .state import State
+from .text_utils import canonical_url
 
 log = get_logger(__name__)
 
@@ -28,11 +35,9 @@ LogCallback = Callable[[str, str], None]
 StopCallback = Callable[[], bool]
 
 
-# Импортируем краулеры синхронно, но запускаем их в executor'ах,
-# т.к. они написаны на requests (синхронно). Это самый простой способ
-# получить параллелизм, не переписывая все краулеры на aiohttp целиком.
-# Если хочется полностью асинхронно — это требует переписывания crawlers/ на aiohttp,
-# что выходит за рамки текущей задачи.
+def _crawler_worker(crawler: Any, url: str, source: SourceItem) -> CorpusRecord | None:
+    """Синхронный вызов краулера — выполняется в executor'е."""
+    return crawler.crawl(url, categories=source.categories or [], source=source)
 
 
 async def run_async_crawl(
@@ -45,8 +50,8 @@ async def run_async_crawl(
     on_record: RecordCallback | None = None,
     on_log: LogCallback | None = None,
     should_stop: StopCallback | None = None,
-    max_concurrent_per_domain: int = 1,
-    max_concurrent_total: int = 8,
+    max_concurrent_per_domain: int | None = None,
+    max_concurrent_total: int | None = None,
 ) -> dict:
     """Асинхронный цикл краулинга.
 
@@ -57,113 +62,167 @@ async def run_async_crawl(
     Возвращает тот же словарь статистики, что и run_crawl.
     """
     from .config import ensure_output_dirs
-    from .state import State
-    from .robots import RobotsCache
-    from .crawlers import get_crawler
-    from .pipeline import append_record, append_error
 
     ensure_output_dirs(config)
-    state = State(config.output.state_file)
+    loop = asyncio.get_running_loop()
+    executor = _make_executor()
+
+    context = build_crawl_context(config)
+    session = context["session"]
+    robots = context["robots"]
+    rate_limiter = context["rate_limiter"]
+    state: State = context["state"]
     if not resume:
-        state._done.clear()
-        state._errors.clear()
+        state.reset()
+        from .pipeline import _truncate_run_outputs
+        _truncate_run_outputs(config)
     if retry_errors:
-        state._errors.clear()
+        state.clear_errors()
+
+    from .crawlers import get_crawler
 
     sources = config.sources
     if source_type:
         sources = [s for s in sources if s.type == source_type]
     if limit:
         sources = sources[:limit]
+    if max_concurrent_per_domain is None:
+        max_concurrent_per_domain = config.pipeline.max_concurrent_per_domain
+    if max_concurrent_total is None:
+        max_concurrent_total = config.pipeline.max_concurrent_total
 
-    # Robots cache + per-domain semaphore
-    robots = RobotsCache(user_agent=config.output.user_agent, timeout=10)
-    domain_sems: dict[str, asyncio.Semaphore] = defaultdict(
-        lambda: asyncio.Semaphore(max_concurrent_per_domain)
-    )
+    domain_sems: dict[str, asyncio.Semaphore] = {}
     total_sem = asyncio.Semaphore(max_concurrent_total)
+    write_lock = asyncio.Lock()          # JSONL/state пишутся по одному
 
-    # Краулеры — синхронные, нужно запускать в executor'е
-    loop = asyncio.get_event_loop()
-    crawler_cache: dict[str, Any] = {}
+    # параллельный prefetch robots.txt + отброс полностью запрещённых доменов
+    skipped_by_prefilter = 0
+    if robots.respect and len([s for s in sources if not s.ignore_robots]) > 1:
+        from .robots import pre_filter_by_robots
+        before = len(sources)
+        checkable = [s for s in sources if not s.ignore_robots]
+        explicit = [s for s in sources if s.ignore_robots]
+        allowed, _disallowed = await loop.run_in_executor(
+            None, lambda: pre_filter_by_robots(checkable, robots))  # один раз, до цикла
+        sources = explicit + allowed
+        skipped_by_prefilter = before - len(sources)
+        if skipped_by_prefilter:
+            log.info(f"robots.txt pre-filter: {skipped_by_prefilter} sources skipped")
 
-    total = len(sources)
+    total = len(sources) + skipped_by_prefilter
     processed = 0
     errors = 0
-    skipped = 0
+    skipped = skipped_by_prefilter
+    stopped = False
+    checkpoint_every = max(1, config.pipeline.save_checkpoint_every)
 
-    async def crawl_one(src, idx: int):
-        nonlocal processed, errors, skipped
+    async def crawl_one(src: SourceItem, idx: int) -> None:
+        nonlocal processed, errors, skipped, stopped
         url = src.url
 
         if should_stop and should_stop():
+            stopped = True
             return
 
-        if state.is_done(url) or state.is_error(url):
+        if state.is_done(url) or state.is_done(canonical_url(url)) or state.is_error(url):
             skipped += 1
             return
 
-        if not robots.is_allowed(url):
+        # блокирующий HTTP-запрос robots.txt нельзя делать в event loop:
+        # он блокирует все корутины до 10 с
+        allowed = (src.ignore_robots or
+                   await loop.run_in_executor(executor, robots.is_allowed, url))
+        if not allowed:
             if on_log:
-                on_log("INFO", f"Disallowed by robots.txt: {url}")
+                on_log("WARNING",
+                       f"robots.txt не разрешает {url[:70]} — пропускаю "
+                       f"(для API-краулеров можно `ignore_robots: true`)")
             skipped += 1
-            state.mark_done(url)
+            # НЕ mark_done: «запрещено» ≠ «обработано», иначе источник
+            # навсегда выпадает из resume-цикла
             return
 
         domain = urlparse(url).netloc
-        domain_sem = domain_sems[domain]
+        if domain not in domain_sems:
+            domain_sems[domain] = asyncio.Semaphore(max(1, max_concurrent_per_domain))
 
-        # Если лимит домена уже занят — ждём
-        async with total_sem:
-            async with domain_sem:
-                if on_progress:
-                    on_progress(idx + 1, total, f"async: {url[:60]}")
+        # ВАЖНО (I7): экземпляр краулера создаётся НА ЗАДАЧУ. `crawler.source`
+        # (per-source include_files/download_files) — изменяемое состояние, и
+        # общий на все задачи краулер перезаписывал бы его параллельными
+        # задачами. Дорогое (Session, пул, кэш) при этом общее.
+        async with total_sem, domain_sems[domain]:
+            if on_progress:
+                on_progress(idx + 1, total, f"async: {url[:60]}")
 
-                # Найти или создать краулер
-                try:
-                    crawler = crawler_cache.get(src.type)
-                    if crawler is None:
-                        crawler = get_crawler(src.type, config)
-                        crawler_cache[src.type] = crawler
-                except ValueError as e:
-                    log.error(f"Unknown source type {src.type!r}: {e}")
-                    errors += 1
-                    return
+            try:
+                crawler = get_crawler(src.type, config)
+                crawler.session = session
+            except ValueError as e:
+                log.error(f"Unknown source type {src.type!r}: {e}")
+                errors += 1
+                return
 
-                # Запускаем синхронный краулер в executor'е
-                try:
-                    record = await loop.run_in_executor(
-                        None,
-                        lambda: crawler.crawl(url, categories=src.categories or [])
-                    )
-                except Exception as e:
-                    log.exception(f"Crawler crashed on {url}")
-                    record = CorpusRecord(
-                        source_url=url,
-                        source_type=src.type,
-                        content="",
-                        status="error",
-                        metadata={"error": str(e)},
-                        categories=src.categories or [],
-                    )
+            # вежливость: того же RateLimiter, что и в синхронном пути
+            await loop.run_in_executor(executor, rate_limiter.wait, url)
 
+            per_url_timeout = config.pipeline.per_url_timeout_minutes * 60
+            try:
+                record = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        executor, _crawler_worker, crawler, url, src),
+                    timeout=per_url_timeout,
+                )
+            except asyncio.TimeoutError:
+                log.warning(f"URL timed out after {config.pipeline.per_url_timeout_minutes} "
+                            f"min, skipping: {url}")
+                if on_log:
+                    on_log("WARNING", f"Превышен таймаут, пропускаю: {url[:80]}")
+                record = CorpusRecord(
+                    source_url=url, source_type=src.type, content="", status="error",
+                    metadata={"error": f"timeout after "
+                                       f"{config.pipeline.per_url_timeout_minutes} minutes"},
+                    categories=src.categories or [],
+                )
+            except Exception as e:
+                log.exception(f"Crawler crashed on {url}")
+                record = CorpusRecord(
+                    source_url=url, source_type=src.type, content="", status="error",
+                    metadata={"error": str(e)}, categories=src.categories or [],
+                )
+
+            async with write_lock:
+                # повторная проверка под замком: параллельные задачи на один URL
+                # (например, «example.com/» дважды) иначе пишут дубль (I2)
                 if record and record.status == "ok" and record.content:
+                    if state.is_done(url) or state.is_done(canonical_url(url)):
+                        skipped += 1
+                        return
+                    from .pipeline import append_record
                     append_record(record, config.output.corpus_file)
                     state.mark_done(url)
                     processed += 1
                     if on_record:
                         on_record(record.model_dump())
                 else:
-                    reason = (record.metadata or {}).get("error", "empty content") if record else "no record"
+                    from .pipeline import append_error
+                    reason = ((record.metadata or {}).get("error", "empty content")
+                              if record else "no record")
                     state.mark_error(url)
                     append_error(ErrorRecord(
-                        source_url=url, source_type=src.type, reason=str(reason)
-                    ), config.output.error_log)
+                        source_url=url, source_type=src.type, reason=str(reason)),
+                        config.output.error_log)
                     errors += 1
 
-    # Запускаем все задачи
-    tasks = [crawl_one(src, i) for i, src in enumerate(sources)]
-    await asyncio.gather(*tasks, return_exceptions=True)
+                if (idx + 1) % checkpoint_every == 0:
+                    state.save()
+
+    tasks = [asyncio.create_task(crawl_one(src, i)) for i, src in enumerate(sources)]
+    # возвращаем исключения, чтобы один упавший URL не ронял весь ран
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for src, res in zip(sources, results, strict=False):
+        if isinstance(res, Exception):
+            log.error(f"async task crashed for {src.url}: {res}")
+            errors += 1
 
     state.save()
 
@@ -174,8 +233,15 @@ async def run_async_crawl(
         "errors": errors,
         "done_total": state.done_count,
         "errors_total": state.error_count,
-        "stopped": False,
+        "stopped": stopped,
         "async": True,
     }
     log.info(f"Async crawl finished: {stats}")
+    executor.shutdown(wait=False)
     return stats
+
+
+def _make_executor():
+    """Пул потоков для синхронных краулеров."""
+    from concurrent.futures import ThreadPoolExecutor
+    return ThreadPoolExecutor(max_workers=32, thread_name_prefix="crawl")

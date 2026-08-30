@@ -1,10 +1,6 @@
 """Тесты на auto_discover и from_wikipedia."""
-import json
 from pathlib import Path
 from unittest import mock
-
-import pytest
-
 
 # ============================================================
 # AutoDiscover — тесты логики (без сети)

@@ -1,0 +1,185 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      USER-AGENT:
+      - CorpusBuilder-Test
+    method: GET
+    uri: http://export.arxiv.org/api/query?search_query=cat:eess.SP&max_results=3
+  response:
+    body:
+      string: ''
+    headers:
+      Accept-Ranges:
+      - bytes
+      Connection:
+      - close
+      Content-Length:
+      - '0'
+      Date:
+      - Sun, 30 Aug 2026 12:40:21 GMT
+      Location:
+      - https://export.arxiv.org/api/query?search_query=cat:eess.SP&max_results=3
+      Retry-After:
+      - '0'
+      Server:
+      - Varnish
+      Strict-Transport-Security:
+      - max-age=300
+      Via:
+      - 1.1 varnish
+      X-Cache:
+      - HIT
+      X-Cache-Hits:
+      - '0'
+      X-Served-By:
+      - cache-sin-wsat1880040-SIN
+      X-Timer:
+      - S1788093622.633871,VS0,VE0
+    status:
+      code: 301
+      message: Moved Permanently
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      USER-AGENT:
+      - CorpusBuilder-Test
+    method: GET
+    uri: https://export.arxiv.org/api/query?search_query=cat:eess.SP&max_results=3
+  response:
+    body:
+      string: "<?xml version='1.0' encoding='UTF-8'?>\n<feed xmlns:opensearch=\"http://a9.com/-/spec/opensearch/1.1/\"
+        xmlns:arxiv=\"http://arxiv.org/schemas/atom\" xmlns=\"http://www.w3.org/2005/Atom\">\n
+        \ <id>https://arxiv.org/api/gGEOqKAFI0q2VC4nJx76XSLY1wU</id>\n  <title>arXiv
+        Query: search_query=cat:eess.SP&amp;id_list=&amp;start=0&amp;max_results=3</title>\n
+        \ <updated>2026-08-30T12:40:21Z</updated>\n  <link href=\"https://arxiv.org/api/query?search_query=cat:eess.SP&amp;start=0&amp;max_results=3&amp;id_list=\"
+        type=\"application/atom+xml\"/>\n  <opensearch:itemsPerPage>3</opensearch:itemsPerPage>\n
+        \ <opensearch:totalResults>41726</opensearch:totalResults>\n  <opensearch:startIndex>0</opensearch:startIndex>\n
+        \ <entry>\n    <id>http://arxiv.org/abs/2012.10082v1</id>\n    <title>Estimating
+        Sparsity Level for Enabling Compressive Sensing of Wireless Channels and Spectra
+        in 5G and Beyond</title>\n    <updated>2020-12-18T07:23:33Z</updated>\n    <link
+        href=\"https://arxiv.org/abs/2012.10082v1\" rel=\"alternate\" type=\"text/html\"/>\n
+        \   <link href=\"https://arxiv.org/pdf/2012.10082v1\" rel=\"related\" type=\"application/pdf\"
+        title=\"pdf\"/>\n    <summary>Applying compressive sensing (CS) allows for
+        sub-Nyquist sampling in several application areas in 5G and beyond. This reduces
+        the associated training, feedback, and computation overheads in many applications.
+        However, the applicability of CS relies on the validity of a signal sparsity
+        assumption and knowing the exact sparsity level. It is customary to assume
+        a foreknown sparsity level. Still, this assumption is not valid in practice,
+        especially when applying learned dictionaries as sparsifying transforms. The
+        problem is more strongly pronounced with multidimensional sparsity. In this
+        paper, we propose an algorithm for estimating the composite sparsity lying
+        in multiple domains defined by learned dictionaries. The proposed algorithm
+        estimates the sparsity level over a dictionary by inferring it from its counterpart
+        with respect to a compact discrete Fourier basis. This inference is achieved
+        by a machine learning prediction. This setting learns the intrinsic relationship
+        between the columns of a dictionary and those of such a fixed basis. The proposed
+        algorithm is applied to estimating sparsity levels in wireless channels, and
+        in cognitive radio spectra. Extensive simulations validate a high quality
+        of sparsity estimation leading to performances very close to the impractical
+        case of assuming known sparsity.</summary>\n    <category term=\"eess.SP\"
+        scheme=\"http://arxiv.org/schemas/atom\"/>\n    <published>2020-12-18T07:23:33Z</published>\n
+        \   <arxiv:primary_category term=\"eess.SP\"/>\n    <author>\n      <name>Mahmoud
+        Nazzal</name>\n    </author>\n    <author>\n      <name>Mehmet Ali Aygul</name>\n
+        \   </author>\n    <author>\n      <name>Huseyin Arslan</name>\n    </author>\n
+        \ </entry>\n  <entry>\n    <id>http://arxiv.org/abs/2012.10229v1</id>\n    <title>Resource
+        Allocation for Intelligent Reflecting Surface Aided Cooperative Communications</title>\n
+        \   <updated>2020-12-18T13:48:10Z</updated>\n    <link href=\"https://arxiv.org/abs/2012.10229v1\"
+        rel=\"alternate\" type=\"text/html\"/>\n    <link href=\"https://arxiv.org/pdf/2012.10229v1\"
+        rel=\"related\" type=\"application/pdf\" title=\"pdf\"/>\n    <summary>This
+        paper investigates an intelligent reflecting surface (IRS) aided cooperative
+        communication network, where the IRS exploits large reflecting elements to
+        proactively steer the incident radio-frequency wave towards destination terminals
+        (DTs). As the number of reflecting elements increases, the reflection resource
+        allocation (RRA) will become urgently needed in this context, which is due
+        to the non-ignorable energy consumption. The goal of this paper, therefore,
+        is to realize the RRA besides the active-passive beamforming design, where
+        RRA is based on the introduced modular IRS architecture. The modular IRS consists
+        with multiple modules, each of which has multiple reflecting elements and
+        is equipped with a smart controller, all the controllers can communicate with
+        each other in a point-to-point fashion via fiber links. Consequently, an optimization
+        problem is formulated to maximize the minimum SINR at DTs, subject to the
+        module size constraint and both individual source terminal (ST) transmit power
+        and the reflecting coefficients constraints. Whereas this problem is NP-hard
+        due to the module size constraint, we develop an approximate solution by introducing
+        the mixed row block $\\ell_{1,F}$-norm to transform it into a suitable semidefinite
+        relaxation. Finally, numerical results demonstrate the meaningfulness of the
+        introduced modular IRS architecture.</summary>\n    <category term=\"eess.SP\"
+        scheme=\"http://arxiv.org/schemas/atom\"/>\n    <published>2020-12-18T13:48:10Z</published>\n
+        \   <arxiv:comment>arXiv admin note: substantial text overlap with arXiv:2002.00331</arxiv:comment>\n
+        \   <arxiv:primary_category term=\"eess.SP\"/>\n    <author>\n      <name>Yulan
+        Gao</name>\n    </author>\n    <author>\n      <name>Chao Yong</name>\n    </author>\n
+        \   <author>\n      <name>Zehui Xiong</name>\n    </author>\n    <author>\n
+        \     <name>Dusit Niyato</name>\n    </author>\n    <author>\n      <name>Yue
+        Xiao</name>\n    </author>\n    <author>\n      <name>Jun Zhao</name>\n    </author>\n
+        \ </entry>\n  <entry>\n    <id>http://arxiv.org/abs/2012.13505v1</id>\n    <title>Performance
+        of Dual-Hop Relaying for THz-RF Wireless Link</title>\n    <updated>2020-12-25T03:51:42Z</updated>\n
+        \   <link href=\"https://arxiv.org/abs/2012.13505v1\" rel=\"alternate\" type=\"text/html\"/>\n
+        \   <link href=\"https://arxiv.org/pdf/2012.13505v1\" rel=\"related\" type=\"application/pdf\"
+        title=\"pdf\"/>\n    <summary>The use of Terahertz (THz) frequency bands for
+        data transmissions between the core network and an access point can be promising
+        for next generation wireless systems. In this paper, we analyze the performance
+        of a dual-hop relaying for THz-RF wireless link for backhaul applications.
+        Considering the $\u03B1-\u03BC$ fading channel and a statistical model of
+        pointing errors, we derive a novel closed-form expression of the cumulative
+        distribution function (CDF) of the signal-to-noise ratio (SNR) for the THz
+        link, which is also valid for non-integer values of $\u03BC$. Using the CDF,
+        we derive analytical expressions of the end-to-end SNR and lower bound on
+        ergodic capacity of a decode-and-forward (DF) assisted THz-RF relaying in
+        terms of system parameters. Using analytical results of the direct link and
+        computer simulations, we demonstrate that the THz-RF relaying is a viable
+        technology for wireless backhaul, providing a significant increase of almost
+        $25 \\%$ in the spectral efficiency, compared to the direct transmissions.</summary>\n
+        \   <category term=\"cs.IT\" scheme=\"http://arxiv.org/schemas/atom\"/>\n
+        \   <category term=\"eess.SP\" scheme=\"http://arxiv.org/schemas/atom\"/>\n
+        \   <published>2020-12-25T03:51:42Z</published>\n    <arxiv:comment>5 pages,
+        3 figures, accepted for presentation in the 2021 IEEE 93rd Vehicular Technology
+        Conference: VTC2021-Spring to be held in Helsinki, Finland, 25-28 April 2021</arxiv:comment>\n
+        \   <arxiv:primary_category term=\"cs.IT\"/>\n    <author>\n      <name>Pranay
+        Bhardwaj</name>\n    </author>\n    <author>\n      <name>S. M. Zafaruddin</name>\n
+        \   </author>\n  </entry>\n</feed>\n"
+    headers:
+      Accept-Ranges:
+      - bytes
+      Age:
+      - '0'
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '7214'
+      Date:
+      - Sun, 30 Aug 2026 12:40:22 GMT
+      Strict-Transport-Security:
+      - max-age=300
+      X-Cache:
+      - MISS, MISS, MISS
+      X-Cache-Hits:
+      - 0, 0, 0
+      X-Served-By:
+      - cache-lga21992-LGA, cache-lga21992-LGA, cache-lga21961-LGA, cache-sin-wsat1880043-SIN
+      X-Timer:
+      - S1788093622.651275,VS0,VE350
+      content-type:
+      - application/atom+xml; charset=utf-8
+      server:
+      - Google Frontend
+      via:
+      - 1.1 google, 1.1 varnish, 1.1 varnish, 1.1 varnish
+      x-cloud-trace-context:
+      - 0c2179a1d011bbab63e7d028b3e76156
+    status:
+      code: 200
+      message: OK
+version: 1

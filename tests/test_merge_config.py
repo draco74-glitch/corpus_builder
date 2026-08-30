@@ -1,11 +1,7 @@
 """Тесты на умное объединение config.yaml и мультиязычный Wikipedia."""
-import json
-import yaml
-from pathlib import Path
 from unittest import mock
 
-import pytest
-
+import yaml
 
 # ============================================================
 # merge_sources — умное объединение с дедупликацией

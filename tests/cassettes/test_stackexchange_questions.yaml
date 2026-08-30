@@ -1,0 +1,82 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      USER-AGENT:
+      - CorpusBuilder-Test
+    method: GET
+    uri: https://api.stackexchange.com/2.3/questions?site=electronics&tagged=kicad&sort=votes&order=desc&pagesize=5&filter=default
+  response:
+    body:
+      string: '{"items":[{"tags":["kicad"],"owner":{"account_id":6542076,"reputation":2274,"user_id":91386,"user_type":"registered","accept_rate":20,"profile_image":"https://www.gravatar.com/avatar/42c83cc402045e23c3a9478a02d5c553?s=256&d=identicon&r=PG&f=y&so-version=2","display_name":"Cal-linux","link":"https://electronics.stackexchange.com/users/91386/cal-linux"},"is_answered":true,"view_count":18487,"accepted_answer_id":392977,"answer_count":1,"score":44,"last_activity_date":1641077256,"creation_date":1535370868,"question_id":392911,"content_license":"CC
+        BY-SA 4.0","link":"https://electronics.stackexchange.com/questions/392911/kicad-5-what-is-the-significance-of-the-various-gnd-symbols","title":"KiCAD
+        5 --- what is the significance of the various GND symbols?"},{"tags":["kicad"],"owner":{"account_id":1347013,"reputation":641,"user_id":28470,"user_type":"registered","profile_image":"https://www.gravatar.com/avatar/f21a0b64108bc8a214b24ac41e6a3916?s=256&d=identicon&r=PG","display_name":"Plasty
+        Grove","link":"https://electronics.stackexchange.com/users/28470/plasty-grove"},"is_answered":true,"view_count":34761,"protected_date":1515240201,"accepted_answer_id":150107,"answer_count":1,"score":39,"last_activity_date":1515219875,"creation_date":1420383163,"question_id":146544,"content_license":"CC
+        BY-SA 3.0","link":"https://electronics.stackexchange.com/questions/146544/kicad-moving-and-rotating-components-with-wires-connected","title":"KiCAD
+        - Moving and rotating components with wires connected"},{"tags":["kicad"],"owner":{"account_id":11881,"reputation":1021,"user_id":568,"user_type":"registered","accept_rate":75,"profile_image":"https://www.gravatar.com/avatar/fab0965d392f9190012e9f8368c203d0?s=256&d=identicon&r=PG","display_name":"hlovdal","link":"https://electronics.stackexchange.com/users/568/hlovdal"},"is_answered":true,"view_count":49135,"accepted_answer_id":19339,"answer_count":2,"score":30,"last_activity_date":1476603485,"creation_date":1315704015,"question_id":19338,"content_license":"CC
+        BY-SA 3.0","link":"https://electronics.stackexchange.com/questions/19338/erc-error-errtype3-pin-connected-to-some-others-pins-but-no-pin-to-drive-it","title":"ERC
+        error &quot;ErrType(3): Pin connected to some others pins but no pin to drive
+        it&quot;"},{"tags":["kicad"],"owner":{"account_id":376800,"reputation":2534,"user_id":26187,"user_type":"registered","accept_rate":82,"profile_image":"https://www.gravatar.com/avatar/0a56b24a73874dc147d0c50bacc66988?s=256&d=identicon&r=PG","display_name":"HL-SDK","link":"https://electronics.stackexchange.com/users/26187/hl-sdk"},"is_answered":true,"view_count":22221,"accepted_answer_id":135697,"answer_count":1,"score":28,"last_activity_date":1459166354,"creation_date":1378481132,"question_id":81415,"content_license":"CC
+        BY-SA 3.0","link":"https://electronics.stackexchange.com/questions/81415/can-i-make-kicad-pcbnew-not-place-all-components-at-0-0","title":"Can
+        I make KiCAD pcbnew NOT place all components at (0,0)"},{"tags":["schematics","kicad"],"owner":{"account_id":1317946,"reputation":33681,"user_id":8627,"user_type":"registered","accept_rate":70,"profile_image":"https://www.gravatar.com/avatar/549a5b0c6bc16592d8f2eacfc211587f?s=256&d=identicon&r=PG","display_name":"jippie","link":"https://electronics.stackexchange.com/users/8627/jippie"},"is_answered":true,"view_count":24409,"accepted_answer_id":30335,"answer_count":3,"score":20,"last_activity_date":1688162798,"creation_date":1334866164,"question_id":30332,"content_license":"CC
+        BY-SA 3.0","link":"https://electronics.stackexchange.com/questions/30332/save-schematic-from-kicad-eeschema-to-png","title":"Save
+        schematic from KiCad / EESchema to png"}],"has_more":true,"quota_max":300,"quota_remaining":298}'
+    headers:
+      Access-Control-Allow-Origin:
+      - '*'
+      CF-Cache-Status:
+      - DYNAMIC
+      CF-Ray:
+      - a333dd0d5f867b65-SIN
+      Cache-Control:
+      - private
+      Connection:
+      - keep-alive
+      Content-Encoding:
+      - gzip
+      Content-Length:
+      - '1253'
+      Content-Type:
+      - application/json; charset=utf-8
+      Date:
+      - Sun, 30 Aug 2026 12:40:21 GMT
+      Server:
+      - cloudflare
+      - prov=969aa0cc-9516-426e-8a11-c41eb06b3349; expires=Mon, 30 Aug 2027 12:40:21
+        GMT; domain=.stackexchange.com; path=/; secure; samesite=none; httponly
+      - __cflb=02DiuEqtkS4jGaTk6jRLVowZ76Z4qeo48vihnVbcBvZw2; HttpOnly; SameSite=None;
+        Secure; Path=/; Expires=Mon, 31 Aug 2026 11:40:21 GMT
+      - prov=969aa0cc-9516-426e-8a11-c41eb06b3349; Path=/; HttpOnly; Domain=stackexchange.com
+      - __cf_bm=Jn7X2vSipytHX839xbaQtfXPjCGYWf10hDa5BkzQidc-1788093621.3405464-1.0.1.1-MVhU7V3fa0PtQLiOEY9QwsawvDCyPIQWAjDwcGWXywvT_3l1TtsSqdg84g5fXtz9jQkJo39QruBjQwni6AUakZ07xiHuCJp5KItrnSfvBAz4QC8sf59PP9TejTDZTqis;
+        HttpOnly; SameSite=None; Secure; Path=/; Domain=api.stackexchange.com; Expires=Sun,
+        30 Aug 2026 13:10:21 GMT
+      Strict-Transport-Security:
+      - max-age=31536000; includeSubDomains
+      Vary:
+      - accept-encoding
+      access-control-allow-credentials:
+      - 'false'
+      access-control-allow-methods:
+      - GET, POST
+      content-security-policy:
+      - upgrade-insecure-requests; frame-ancestors 'self' https://stackexchange.com
+      x-clacks-overhead:
+      - GNU Terry Pratchett
+      x-content-type-options:
+      - nosniff
+      x-providence-cookie:
+      - 969aa0cc-9516-426e-8a11-c41eb06b3349
+      x-request-guid:
+      - e5996353-5b76-4849-82e1-eb7dd7d746ca
+      x-worker-origin-response-time:
+      - '264000000'
+    status:
+      code: 200
+      message: OK
+version: 1

@@ -21,9 +21,10 @@
 from __future__ import annotations
 
 import json
+import random
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..logging_setup import get_logger
 from ..writer import open_corpus_reader
@@ -181,8 +182,7 @@ class InstructionGenerator:
         output_file = Path(output_file)
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w", encoding="utf-8") as f:
-            for pair in pairs:
-                f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+            f.writelines(json.dumps(pair, ensure_ascii=False) + "\n" for pair in pairs)
         log.info(f"Saved {len(pairs)} pairs to {output_file}")
         return str(output_file)
 
@@ -695,8 +695,7 @@ class InstructionGenerator:
             # Instead of hardcoded templates, we extract key terms from the
             # previous answer and build a question around them. This produces
             # more natural and diverse follow-ups.
-            import random as _random
-            _rng = _random.Random(hash(record.get("source_url", "")) & 0xFFFFFFFF)
+            _rng = random.Random(hash(record.get("source_url", "")) & 0xFFFFFFFF)
 
             # Take up to 3 more answers (so max 4 turns total: 2 user + 2 assistant)
             for ans in answers[1:4]:
@@ -736,7 +735,7 @@ class InstructionGenerator:
 
     @staticmethod
     def _generate_follow_up(prev_answer: str, next_answer: str,
-                            rng: _random.Random) -> str:
+                            rng: random.Random) -> str:
         """Generate a context-aware follow-up question.
 
         Instead of hardcoded templates, extracts key terms from the previous
@@ -760,7 +759,7 @@ class InstructionGenerator:
             "what", "when", "which", "their", "they", "them", "then", "than",
             "been", "were", "would", "could", "should", "about", "there",
             "where", "into", "over", "after", "also", "more", "such", "only",
-            "some", "very", "just", "much", "many", "most", "other", "into",
+            "some", "very", "just", "much", "many", "most", "other",
             "through", "during", "before", "above", "below", "between",
             "этом", "эта", "этот", "что", "как", "для", "при", "или", "также",
         }

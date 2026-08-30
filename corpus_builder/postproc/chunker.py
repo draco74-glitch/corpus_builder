@@ -1,7 +1,7 @@
 """Разделение длинных текстов на чанки для fine-tuning."""
 from __future__ import annotations
+
 import re
-from typing import Iterator
 
 # Regex to match fenced code blocks (```...```)
 # Used to protect them from being split mid-block.

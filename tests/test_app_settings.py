@@ -1,15 +1,10 @@
 """Тесты на app_settings — хранение настроек приложения."""
 import json
 import os
-import tempfile
-from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from corpus_builder.app_settings import (
-    AppSettings, CrawlSettings, QualitySettings, DedupSettings,
-    GithubCrawlerSettings, PdfCrawlerSettings,
+    AppSettings,
 )
 
 

@@ -27,6 +27,7 @@ comment"). We only redact when the surrounding text strongly suggests the
 username is being used as a credential or in a sensitive URL pattern.
 """
 from __future__ import annotations
+
 import re
 
 # ============================================================
@@ -53,31 +54,72 @@ EMAIL_OBFUSCATED_PLAIN_RE = re.compile(
 )
 
 # ============================================================
-# 2. Phone patterns
+# 2. Телефонные номера — ТОЛЬКО в контексте (I12)
+# ============================================================
+#
+# Прежние паттерны матчили ЛЮБУЮ последовательность цифр вида
+# `ddd-dd-dddd` / `\d+\.\d+\.\d+\.\d+` / «три группы цифр через пробел».
+# В техническом корпусе это не телефоны, а:
+#   "consecutive writes need 150 200 250 ns",
+#   "the register file is 192.168.1.1"          (адрес — ок, но и версии тоже)
+#   "firmware bundle 1.22.331.4",
+#   "part 123-45-6789"                          (номер детали),
+# и всё это молча превращалось в [REDACTED], портя обучающую выборку.
+# Теперь телефон признаётся только рядом с явными маркерами телефона либо
+# в формате с кодом страны и достаточной длиной.
+
+_PHONE_LABEL = (
+    # международный: +1-555-123-4567, +7 (495) 123-45-67, +44 20 7946 0958
+    r"(?:\+\d{1,3}[\s.-]\(?\d{1,4}\)?[\s.-]\d{2,4}[\s.-]\d{2,4}[\s.-]?\d{0,4}"
+    # российский без «+»: 8 (495) 123-45-67, 8-916-123-45-67
+    r"|\b8[\s.-]\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{2}[\s.-]\d{2}"
+    # североамериканский без «+»: 1-555-123-4567
+    r"|\b1[\s.-]\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4})")
+
+# Строгий «телефонный» паттерн: не менее 9 цифр и явный разделительный формат.
+# Чистых 10 цифр с пробелами недостаточно (см. примеры выше).
+PHONE_STRICT_RE = re.compile(_PHONE_LABEL)
+
+# Лексика, рядом с которой «похожие на телефон» цифры точно телефонные.
+_PHONE_CONTEXT = re.compile(
+    r"(?i)(?:\bтелефон\b|\bтел\b|\bтел\s*[.:]|\bphone\b|\bfax\b|\bfone\b|"
+    r"\btel\s*[.:]?|\btel\b|"
+    r"\bhotline\b|\bконтакт\w*|\bзвон\w*|\bномер\b|\bcall(?:ing)?\b|\bas\s+shown\b)")
+
+# Всегда вырезаем форматы, которые в техническом тексте не встречаются:
+# международный номер с «+» и российский вид 8 (495) 123-45-67 / 8-916-...
+PHONE_UNAMBIGUOUS_RE = re.compile(
+    r"(?:\+\d{1,3}[\s.-]\(?\d{1,4}\)?[\s.-]\d{2,4}[\s.-]\d{2,4}[\s.-]?\d{2,4}"
+    r"|\b8[\s.-]\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{2}[\s.-]\d{2})\b")
+# Двусмысленно (1-555-123-4567, три группы цифр через пробел): это может быть и
+# телефон, и задержка/партия — вырезаем только рядом с телефонной лексикой.
+PHONE_AMBIGUOUS_RE = re.compile(
+    r"\b1[\s.-]\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b"
+    r"|\b\d{3}[\s.-]\d{3}[\s.-]\d{4}\b")
+# Максимально широкий вариант -- для remove_pii(aggressive=True): прежнее
+# «вырезаем всё, похожее на цифры».
+PHONE_LOOSE_RE = re.compile(r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+
+# Старые имена (используются detect_pii и тестами)
+PHONE_INTL_RE = re.compile(r"\+\d{1,3}[\s.-]?\(?\d{1,4}\)?[\s.-]?\d{3}[\s.-]?\d{3,4}")
+PHONE_RU_RE = re.compile(r"\b8[\s.-]\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{2}[\s.-]\d{2}\b")
+PHONE_RE = PHONE_STRICT_RE
+
+# ============================================================
+# 3. IP / SSN — тоже с проверкой формата и контекста (I12)
 # ============================================================
 
-# International with +: +1-555-123-4567, +7 (495) 123-45-67, +44 20 7946 0958
-PHONE_INTL_RE = re.compile(
-    r'\+\d{1,3}[\s.-]?\(?\d{1,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}'
-    r'(?:[\s.-]?\d{1,4})?'
-)
-
-# Russian phone (without +): 8 (495) 123-45-67, 8-916-123-45-67
-PHONE_RU_RE = re.compile(
-    r'\b8[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}\b'
-)
-
-# Generic 10-digit: 555-123-4567 (kept from original but tightened)
-PHONE_RE = re.compile(
-    r'\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'
-)
-
-# ============================================================
-# 3. IP / SSN
-# ============================================================
-
-IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-SSN_RE = re.compile(r'\b\d{3}-\d{2}-\d{4}\b')
+# IPv4: каждый октет 0-255 (раньше \d{1,3} ловил «1.22.331.4» — версию прошивки)
+_OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+IP_STRICT_RE = re.compile(rf"\b{_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET}\b")
+# ... и только когда рядом говорит о сети/IP/адресе узла
+_IP_CONTEXT = re.compile(
+    r"(?i)(\bip[-\s]?address\b|\bip\b|\bадрес\b|\bsubnet\b|\bмаска\b|"
+    r"\bgateway\b|\bшлюз\b|\bdns\b|\bCIDR\b|\bport\b|\bпорт\b)")
+IP_RE = IP_STRICT_RE            # детект; для вырезания нужен контекст
+SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_SSN_CONTEXT = re.compile(r"(?i)(\bSSN\b|social\s+security|\bпаспорт\w*|\bИНН\b|"
+                          r"\bСНИЛС\b|\bid\s*number\b)")
 
 # ============================================================
 # 4. API keys / tokens
@@ -137,6 +179,31 @@ _GIT_SSH_RE = re.compile(
 )
 
 
+
+def _redact_near(pattern: re.Pattern, text: str, context: re.Pattern | None,
+                 replace_with: str = "[REDACTED]", window: int = 80) -> str:
+    """Вырезать совпадения, только рядом с которыми есть контекстное слово.
+
+    Так «150 200 250 ns» и «партия 123-45-6789» остаются в корпусе, а
+    «телефон: +7 495 123-45-67» — вырезается (I12).
+    """
+    if context is None:                      # «aggressive»: вырезает всё подряд
+        return pattern.sub(replace_with, text)
+
+    out = []
+    last = 0
+    lowered = text.lower()
+    for m in pattern.finditer(text):
+        before = lowered[max(0, m.start() - window):m.start()]
+        after = lowered[m.end():m.end() + 40]
+        if context.search(before) or context.search(after):
+            out.append(text[last:m.start()])
+            out.append(replace_with)
+            last = m.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _redact_api_key_assignment(match: re.Match) -> str:
     """Replace just the VALUE in `api_key="VALUE"` — keep the key name visible."""
     full = match.group(0)
@@ -157,12 +224,17 @@ def _redact_token_assignment(match: re.Match) -> str:
     return full.replace(value, "[REDACTED]")
 
 
-def remove_pii(text: str, replace_with: str = "[REDACTED]") -> str:
+def remove_pii(text: str, replace_with: str = "[REDACTED]",
+               aggressive: bool = False) -> str:
     """Удалить PII из текста.
 
     Args:
         text: input text (prompt or completion)
         replace_with: replacement string for redacted content
+        aggressive: вырезать также и «похожие на телефон/IP/SSN» числа без
+            контекста (прежнее поведение). По умолчанию False, потому что в
+            техническом корпусе такие последовательности — значения задержек,
+            версии прошивок и номера деталей, и их порча дороже выгоды (I12).
 
     Returns:
         text with emails, phones, IPs, SSNs, API keys, tokens, and
@@ -173,23 +245,21 @@ def remove_pii(text: str, replace_with: str = "[REDACTED]") -> str:
 
     # 1. Emails (standard + obfuscated)
     text = EMAIL_RE.sub(replace_with, text)
-    text = EMAIL_OBFUSCATED_RE.sub(
-        lambda m: f"{m.group(1)} {replace_with} {m.group(2)} {replace_with} {m.group(3)}",
-        text,
-    )
-    text = EMAIL_OBFUSCATED_PLAIN_RE.sub(
-        lambda m: f"{m.group(1)} {replace_with} {m.group(2)} {replace_with} {m.group(3)}",
-        text,
-    )
+    # Раньше заменялись только разделители ([at]/[dot]), и адрес оставался
+    # читаемым: "john.doe [REDACTED] example [REDACTED] com" (I12/приватность).
+    text = EMAIL_OBFUSCATED_RE.sub(replace_with, text)
+    text = EMAIL_OBFUSCATED_PLAIN_RE.sub(replace_with, text)
 
-    # 2. Phones (intl first to catch +, then RU 8-, then generic)
-    text = PHONE_INTL_RE.sub(replace_with, text)
-    text = PHONE_RU_RE.sub(replace_with, text)
-    text = PHONE_RE.sub(replace_with, text)
+    # 2. Телефоны: недвусмысленные форматы всегда, «похожие» — в контексте (I12)
+    text = PHONE_UNAMBIGUOUS_RE.sub(replace_with, text)
+    if aggressive:
+        text = PHONE_LOOSE_RE.sub(replace_with, text)
+    else:
+        text = _redact_near(PHONE_AMBIGUOUS_RE, text, _PHONE_CONTEXT, replace_with)
 
-    # 3. IP / SSN
-    text = IP_RE.sub(replace_with, text)
-    text = SSN_RE.sub(replace_with, text)
+    # 3. IP (валидные октеты + контекст сети) и SSN (контекст документа)
+    text = _redact_near(IP_STRICT_RE, text, None if aggressive else _IP_CONTEXT, replace_with)
+    text = _redact_near(SSN_RE, text, None if aggressive else _SSN_CONTEXT, replace_with)
 
     # 4. API keys / tokens
     # 4a. Assignment-style: api_key="...", secret: "...", password=...
@@ -224,10 +294,10 @@ def remove_pii(text: str, replace_with: str = "[REDACTED]") -> str:
     return text
 
 
-def clean_pair(pair: dict) -> dict:
-    """Очистить пару от PII."""
-    pair["prompt"] = remove_pii(pair.get("prompt", ""))
-    pair["completion"] = remove_pii(pair.get("completion", ""))
+def clean_pair(pair: dict, aggressive: bool = False) -> dict:
+    """Очистить пару от PII (mutates and returns `pair`)."""
+    pair["prompt"] = remove_pii(pair.get("prompt", ""), aggressive=aggressive)
+    pair["completion"] = remove_pii(pair.get("completion", ""), aggressive=aggressive)
     return pair
 
 
@@ -241,11 +311,13 @@ def detect_pii(text: str) -> dict:
     found: dict[str, int] = {}
     if EMAIL_RE.search(text) or EMAIL_OBFUSCATED_RE.search(text) or EMAIL_OBFUSCATED_PLAIN_RE.search(text):
         found["email"] = found.get("email", 0) + 1
-    if PHONE_INTL_RE.search(text) or PHONE_RU_RE.search(text) or PHONE_RE.search(text):
+    if (PHONE_UNAMBIGUOUS_RE.search(text)
+            or (_PHONE_CONTEXT.search(text)
+                and (PHONE_STRICT_RE.search(text) or PHONE_AMBIGUOUS_RE.search(text)))):
         found["phone"] = found.get("phone", 0) + 1
-    if IP_RE.search(text):
+    if _IP_CONTEXT.search(text) and IP_STRICT_RE.search(text):
         found["ip"] = found.get("ip", 0) + 1
-    if SSN_RE.search(text):
+    if _SSN_CONTEXT.search(text) and SSN_RE.search(text):
         found["ssn"] = found.get("ssn", 0) + 1
     if (_API_KEY_ASSIGNMENT_RE.search(text) or _TOKEN_ASSIGNMENT_RE.search(text)
             or _BEARER_RE.search(text)):

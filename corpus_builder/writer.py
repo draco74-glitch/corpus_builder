@@ -1,10 +1,16 @@
-"""Буферизованная запись в JSONL."""
+"""Буферизованная запись в JSONL.
+
+`CorpusWriter` используют стадии пост-обработки (`postproc/normalize.py`).
+`GzipCorpusWriter` — утилита для корпусов, которые хотят держать
+сжатыми на лету; финальный .gz сейчас создаётся отдельным шагом
+(`pipeline._gzip_file`).
+"""
 from __future__ import annotations
 
 import json
 import threading
 from pathlib import Path
-from typing import Any, IO
+from typing import IO, Any
 
 
 class CorpusWriter:

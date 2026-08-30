@@ -22,7 +22,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import random
 from pathlib import Path
 from typing import Any
@@ -90,6 +89,21 @@ _DEFAULT_PROMPT_VARIATIONS: dict[str, list[str]] = {
         "Can you answer this question?\n\n{question}",
         "I have a question: {question}",
     ],
+    "article_expansion": [
+        "Expand the following short description into a full technical article:\n\n{summary}",
+        "Write a detailed section based on this summary:\n\n{summary}",
+        "Turn this abstract into a complete explanation for an engineering audience:\n\n{summary}",
+    ],
+    "description_to_kicad": [
+        "Generate a KiCad schematic description (.kicad_sch) for the following project "
+        "description:\n\n{desc}",
+        "Write the .kicad_sch netlist-style description matching this circuit brief:"
+        "\n\n{desc}",
+    ],
+    "datasheet_structure": [
+        "Propose the documentation structure (section list) for this component:\n\n{component}",
+        "Which datasheet sections should a document about {component} contain?",
+    ],
     "faq_qa": [
         "{question}",
         "Question: {question}",
@@ -108,6 +122,7 @@ _DEFAULT_PROMPT_VARIATIONS: dict[str, list[str]] = {
 # Use copy.deepcopy so modifications to PROMPT_VARIATIONS don't leak into
 # _DEFAULT_PROMPT_VARIATIONS (which should remain pristine for reset).
 import copy as _copy
+
 PROMPT_VARIATIONS: dict[str, list[str]] = _copy.deepcopy(_DEFAULT_PROMPT_VARIATIONS)
 
 # Seed for reproducibility — set via set_seed() if needed.
@@ -118,6 +133,15 @@ def set_seed(seed: int) -> None:
     """Set the RNG seed for deterministic prompt selection."""
     global _rng
     _rng = random.Random(seed)
+
+
+def merge_custom_prompts(file_path: str | Path) -> bool:
+    """Загрузить кастомные промпты; True, если что-то добавилось.
+
+    Встроенные варианты СОХРАНЯЮТСЯ (append): опечатка в prompts.yaml не должна
+    молча лишать датасет разнообразия шаблонов.
+    """
+    return bool(load_custom_prompts(file_path))
 
 
 def load_custom_prompts(file_path: str | Path) -> dict[str, list[str]]:
@@ -194,18 +218,49 @@ def get_prompt(task_type: str, **kwargs: Any) -> str:
                     break
         return content
     template = _rng.choice(variations)
-    try:
-        return template.format(**kwargs)
-    except KeyError as e:
-        # If a kwarg is missing, fall back to the first variation that
-        # doesn't need it.
+
+    # Подставляем через «безопасный» dict: неизвестный ключ не роняет генератор,
+    # но и литерал вида "{content}" в датасет попасть не должен (I13).
+    filled, missing = _try_format(template, kwargs)
+
+    if missing:
+        # выбранный вариант хочет ключи, которых у генератора нет —
+        # пробуем другие варианты этого task_type
         for tmpl in variations:
-            try:
-                return tmpl.format(**kwargs)
-            except KeyError:
-                continue
-        # Last resort: return template as-is
-        return template
+            candidate, cand_missing = _try_format(tmpl, kwargs)
+            if candidate is not None and not cand_missing:
+                return candidate
+        # ни один вариант не подходит: собираем текст из того, что дал
+        # генератор, без фигурных скобок
+        log.warning(f"None of {len(variations)} variations for '{task_type}' fit "
+                    f"kwargs {sorted(kwargs)} (template wanted {sorted(set(missing))}); "
+                    f"built a plain prompt instead")
+        parts = [f"{k}: {v}" for k, v in kwargs.items() if isinstance(v, str) and v]
+        return "\n\n".join(parts) or (filled or "")
+
+    return filled or ""
+
+
+def _try_format(template: str, kwargs: dict) -> tuple[str | None, list[str]]:
+    """(результат, список отсутствующих ключей); результат None при ошибке."""
+    probe = _SafeDict(kwargs)
+    try:
+        return template.format_map(probe), list(probe.missing)
+    except (IndexError, KeyError, ValueError) as e:
+        log.debug(f"prompt template {template[:30]!r} failed to format: {e}")
+        return None, list(probe.missing)
+
+
+class _SafeDict(dict):
+    """dict для str.format_map: remembers missing keys instead of raising."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.missing: list[str] = []
+
+    def __missing__(self, key):
+        self.missing.append(key)
+        return ""
 
 
 def list_variations(task_type: str) -> list[str]:

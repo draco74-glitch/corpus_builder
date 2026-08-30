@@ -1,14 +1,6 @@
 """Тесты на оптимизации производительности (Улучшения 1-14)."""
 import gzip
 import json
-import os
-import pickle
-import tempfile
-from pathlib import Path
-from unittest import mock
-
-import pytest
-
 
 # ============================================================
 # Улучшение 2: CorpusWriter — буферизованная запись
@@ -131,9 +123,8 @@ def test_mmap_reader_large_file(tmp_path):
     path = tmp_path / "large.jsonl"
     # Создаём файл > 100 КБ
     with open(path, "w", encoding="utf-8") as f:
-        for i in range(5000):
-            f.write(json.dumps({"url": f"https://example.com/{i}",
-                                "content": "x" * 50}) + "\n")
+        f.writelines(json.dumps({"url": f"https://example.com/{i}",
+                                "content": "x" * 50}) + "\n" for i in range(5000))
     # mmap должен сработать
     with MmapJsonlReader(path, min_size_for_mmap=100 * 1024) as reader:
         records = list(reader.iter_records())
@@ -147,8 +138,7 @@ def test_mmap_reader_count_lines(tmp_path):
     from corpus_builder.mmap_reader import MmapJsonlReader
     path = tmp_path / "test.jsonl"
     with open(path, "w", encoding="utf-8") as f:
-        for i in range(100):
-            f.write(json.dumps({"i": i}) + "\n")
+        f.writelines(json.dumps({"i": i}) + "\n" for i in range(100))
     with MmapJsonlReader(path, min_size_for_mmap=1) as reader:
         count = reader.count_lines()
     assert count == 100
@@ -207,12 +197,11 @@ def test_incremental_dedup_process_corpus(tmp_path):
     # Создаём корпус
     corpus_path = tmp_path / "corpus.jsonl"
     with open(corpus_path, "w", encoding="utf-8") as f:
-        for i in range(5):
-            f.write(json.dumps({
+        f.writelines(json.dumps({
                 "source_url": f"https://example.com/{i}",
                 "content": f"Unique text number {i} about electronics circuits.",
                 "status": "ok",
-            }) + "\n")
+            }) + "\n" for i in range(5))
         # Дубликат первой записи
         f.write(json.dumps({
             "source_url": "https://example.com/dup",
@@ -232,8 +221,8 @@ def test_incremental_dedup_process_corpus(tmp_path):
 
 def test_make_session_has_pooling():
     """make_session создаёт Session с connection pooling."""
-    from corpus_builder.robots import make_session
     from corpus_builder.models import AppConfig
+    from corpus_builder.robots import make_session
     cfg = AppConfig(
         sources=[{"url": "https://example.com", "type": "html"}],
         output={"corpus_file": "test.jsonl", "download_dir": "test",
@@ -266,7 +255,7 @@ def test_prefetch_robots_for_known_domains():
 
 def test_lazy_crawler_import():
     """get_crawler лениво импортирует только нужный класс."""
-    from corpus_builder.crawlers import get_crawler, list_known_types, _imported_cache
+    from corpus_builder.crawlers import _imported_cache, list_known_types
     # Сбрасываем кэш
     _imported_cache.clear()
     cfg = None  # не используется в этом тесте напрямую
@@ -299,12 +288,11 @@ def test_streaming_minhash_dedup(tmp_path):
     # Создаём корпус с дубликатом
     corpus_path = tmp_path / "corpus.jsonl"
     with open(corpus_path, "w", encoding="utf-8") as f:
-        for i in range(3):
-            f.write(json.dumps({
+        f.writelines(json.dumps({
                 "source_url": f"https://example.com/{i}",
                 "content": f"Unique technical text number {i} about electronics.",
                 "status": "ok",
-            }) + "\n")
+            }) + "\n" for i in range(3))
         # Дубликат 0-й записи
         f.write(json.dumps({
             "source_url": "https://example.com/dup",
@@ -326,11 +314,10 @@ def test_parallel_normalize(tmp_path):
     in_file = tmp_path / "in.jsonl"
     out_file = tmp_path / "out.jsonl"
     with open(in_file, "w", encoding="utf-8") as f:
-        for i in range(20):
-            f.write(json.dumps({
+        f.writelines(json.dumps({
                 "source_url": f"https://example.com/{i}",
                 "content": f"  Test text {i} with extra spaces.  ",
-            }) + "\n")
+            }) + "\n" for i in range(20))
     result = run_normalize_parallel(in_file, out_file, workers=2, chunk_size=5)
     assert result["total"] == 20
     assert out_file.exists()

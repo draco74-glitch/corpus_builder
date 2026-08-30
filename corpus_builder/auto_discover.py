@@ -20,15 +20,15 @@
 """
 from __future__ import annotations
 
-import json
-import os
-import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .config_generator import (
-    build_config, from_github_topics, from_stackexchange_tags,
-    from_wikipedia, make_source,
+    build_config,
+    from_github_topics,
+    from_stackexchange_tags,
+    from_wikipedia,
+    make_source,
 )
 from .logging_setup import get_logger
 
@@ -140,7 +140,7 @@ class AutoDiscover:
             if on_progress:
                 on_progress(current_step, total_steps, f"Seed URLs: добавление {len(seed_urls)} URL")
             for url in seed_urls:
-                self._add_source(url, categories=["seed"])
+                self._add_source(url, categories=["seed"])   # тип определится по URL
 
         if on_progress:
             on_progress(total_steps, total_steps, f"Готово: {len(self._all_sources)} источников")
@@ -148,12 +148,19 @@ class AutoDiscover:
         log.info(f"Auto-discover complete: {self._stats}")
         return self._all_sources
 
-    def _add_source(self, url: str, categories: list[str] | None = None) -> None:
-        """Добавить источник с дедупликацией."""
+    def _add_source(self, url: str, categories: list[str] | None = None,
+                    source_type: str | None = None) -> None:
+        """Добавить источник с дедупликацией.
+
+        `source_type` обязана сохраняться: стратегия (`from_wikipedia`,
+        `from_stackexchange_tags`, …) уже определила тип, а повторный
+        `detect_source_type(url)` до фикса здесь терял его — в config.yaml
+        вики-статьи уезжали как `html`, и WikipediaCrawler не вызывался (C2).
+        """
         if url in self._seen_urls:
             return
         self._seen_urls.add(url)
-        self._all_sources.append(make_source(url, categories=categories))
+        self._all_sources.append(make_source(url, source_type, categories=categories))
 
     def _search_github(self, topics: list[str], max_repos: int) -> None:
         """Поиск репозиториев на GitHub."""
@@ -163,7 +170,7 @@ class AutoDiscover:
                 max_repos=max_repos,
             )
             for s in sources:
-                self._add_source(s["url"], s.get("categories"))
+                self._add_source(s["url"], s.get("categories"), s.get("type"))
             self._stats["github"] = len(sources)
             log.info(f"GitHub: found {len(sources)} repos")
         except Exception as e:
@@ -180,7 +187,7 @@ class AutoDiscover:
                 min_score=3,
             )
             for s in sources:
-                self._add_source(s["url"], s.get("categories"))
+                self._add_source(s["url"], s.get("categories"), s.get("type"))
             self._stats["stackexchange"] = len(sources)
             log.info(f"StackExchange: found {len(sources)} questions")
         except Exception as e:
@@ -197,7 +204,7 @@ class AutoDiscover:
                 depth=1,
             )
             for s in sources:
-                self._add_source(s["url"], s.get("categories"))
+                self._add_source(s["url"], s.get("categories"), s.get("type"))
             self._stats["wikipedia"] = len(sources)
             log.info(f"Wikipedia: found {len(sources)} articles")
         except Exception as e:
@@ -220,7 +227,7 @@ class AutoDiscover:
                 depth=1,
             )
             for s in sources:
-                self._add_source(s["url"], s.get("categories"))
+                self._add_source(s["url"], s.get("categories"), s.get("type"))
             self._stats["wikipedia"] = len(sources)
             self._stats["wikipedia_langs"] = languages
             log.info(f"Wikipedia multi-lang: found {len(sources)} articles "

@@ -1,7 +1,6 @@
 """CLI для corpus-builder."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import click
@@ -28,14 +27,36 @@ def cli(ctx, config: str, verbose: bool):
 @click.option("--resume/--no-resume", default=None, help="Продолжить с последнего чекпойнта")
 @click.option("--limit", type=int, default=None, help="Обработать только первые N источников")
 @click.option("--source-type", type=str, default=None,
-              help="Только источники указанного типа (html, pdf, github_repo, stackexchange, doaj, arxiv, crossref, wikipedia)")
+              help="Только источники указанного типа (html, pdf, github_repo, stackexchange, "
+                   "forum, doaj, arxiv, crossref, wikipedia)")
 @click.option("--dry-run", is_flag=True, help="Только показать, что будет обработано")
+@click.option("--async/--sync", "use_async", default=None,
+              help="Явно выбрать асинхронный/синхронный краулинг "
+                   "(по умолчанию — pipeline.use_async из config.yaml)")
 @click.pass_obj
-def crawl(cfg, resume, limit, source_type, dry_run):
-    """Запустить краулинг (синхронный)."""
+def crawl(cfg, resume, limit, source_type, dry_run, use_async):
+    """Запустить краулинг (синхронный или асинхронный)."""
+    import asyncio
+
+    from .async_pipeline import run_async_crawl
     from .pipeline import run_crawl
+
     resume = cfg.pipeline.resume if resume is None else resume
-    stats = run_crawl(cfg, resume=resume, limit=limit, source_type=source_type, dry_run=dry_run)
+    if use_async is None:
+        use_async = cfg.pipeline.use_async
+
+    if dry_run and not resume:
+        # dry-run ничего не пишет — усекать корпуса не нужно
+        pass
+    if use_async:
+        stats = asyncio.run(run_async_crawl(
+            cfg, resume=resume, limit=limit, source_type=source_type,
+            max_concurrent_total=cfg.pipeline.max_concurrent_total,
+            max_concurrent_per_domain=cfg.pipeline.max_concurrent_per_domain,
+        ))
+    else:
+        stats = run_crawl(cfg, resume=resume, limit=limit, source_type=source_type,
+                          dry_run=dry_run)
     click.echo(json_dump(stats))
 
 
@@ -43,7 +64,7 @@ def crawl(cfg, resume, limit, source_type, dry_run):
 @click.option("--resume/--no-resume", default=None, help="Продолжить с последнего чекпойнта")
 @click.option("--limit", type=int, default=None, help="Обработать только первые N источников")
 @click.option("--source-type", type=str, default=None,
-              help="Только источники указанного типа")
+              help="Только источники указанного tipo")
 @click.option("--max-concurrent", type=int, default=8,
               help="Максимум одновременных запросов (по умолчанию 8)")
 @click.option("--max-concurrent-per-domain", type=int, default=1,
@@ -52,6 +73,7 @@ def crawl(cfg, resume, limit, source_type, dry_run):
 def async_crawl(cfg, resume, limit, source_type, max_concurrent, max_concurrent_per_domain):
     """Запустить асинхронный краулинг (ускорение 4-8x для смешанных доменов)."""
     import asyncio
+
     from .async_pipeline import run_async_crawl
     resume = cfg.pipeline.resume if resume is None else resume
     stats = asyncio.run(run_async_crawl(
@@ -120,6 +142,55 @@ def diff(old_file, new_file, html_output):
     }))
     if html_output:
         click.echo(f"\nHTML-отчёт сохранён: {html_output}")
+
+
+@cli.command()
+@click.option("--build-dir", default="dist/CorpusBuilder",
+              help="Собранные one-dir артефакты PyInstaller")
+@click.option("--output", "output_zip", default=None, help="Куда положить ZIP")
+@click.option("--version", default=None, help="Версия в имени файла (по умолчанию из пакета)")
+@click.option("--patch-only", is_flag=True,
+              help="Собрать только patch.zip (.py файлы для авто-обновления)")
+@click.pass_obj
+def package(cfg, build_dir, output_zip, version, patch_only):
+    """Собрать ZIP-дистрибутив (или patch.zip) из готовой сборки."""
+    from . import __version__
+    from .zip_distributor import create_distribution, create_patch_only
+
+    ver = version or __version__
+    if patch_only:
+        out = create_patch_only("corpus_builder",
+                                output_zip or f"dist/patch-{ver}.zip",
+                                version=ver)
+        click.echo(json_dump({"patch": out}))
+        return
+    info = create_distribution(build_dir, output_zip=output_zip, version=ver)
+    click.echo(json_dump(info))
+
+
+@cli.command(name="export")
+@click.option("--format", "fmt", type=click.Choice(["hf", "parquet", "both"]),
+              default="both", help="Формат экспорта финального корпуса")
+@click.option("--out", "out_dir", default=None,
+              help="Куда экспортировать (по умолчанию — рядом с corpus_file)")
+@click.pass_obj
+def export_cmd(cfg, fmt, out_dir):
+    """Экспортировать corpus_final.jsonl в HuggingFace/Parquet из CLI."""
+    from pathlib import Path
+
+    from .postproc.export import export_huggingface, export_parquet
+
+    final = Path(cfg.output.corpus_file).parent / "corpus_final.jsonl"
+    if not final.exists():
+        raise click.ClickException(
+            f"{final} не найден — сначала выполните postprocess")
+    base = Path(out_dir) if out_dir else final.parent
+    result = {}
+    if fmt in ("hf", "both"):
+        result["huggingface"] = export_huggingface(final, base / "corpus_hf_dataset")
+    if fmt in ("parquet", "both"):
+        result["parquet"] = export_parquet(final, base / "corpus.parquet")
+    click.echo(json_dump(result))
 
 
 def json_dump(obj) -> str:

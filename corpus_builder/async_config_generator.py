@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import urljoin, urlparse
 
 from .config_generator import from_excel, make_source
@@ -210,10 +210,8 @@ async def async_seed_crawl_depth(
         should_stop: если True — останавливаемся
         url_cache: опциональный кэш HTML (Улучшение 4) — переиспользуется между seeds
     """
-    if depth < 0:
-        depth = 0
-    if depth > 1000:
-        depth = 1000
+    depth = max(depth, 0)
+    depth = min(depth, 1000)
 
     import aiohttp
 

@@ -11,29 +11,41 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
-from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar, QTextEdit,
-    QTableWidget, QTableWidgetItem, QTabWidget, QCheckBox, QSpinBox, QComboBox,
-    QMessageBox, QGroupBox, QSplitter, QHeaderView, QStatusBar, QStyle,
-    QDialog, QFormLayout,
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
-from .config import load_config, ensure_output_dirs
-from .gui_improvements import tr, set_language, get_language, THEMES, apply_theme, get_theme_qss
-from .logging_setup import get_logger, setup_logging
-from .models import AppConfig
 from .app_settings import AppSettings
-from .pipeline import run_crawl, run_postprocess
-from .state import State
+from .config import ensure_output_dirs, load_config
+from .gui_improvements import apply_theme, get_language, get_theme_qss, set_language, tr
+from .logging_setup import get_logger
+from .models import AppConfig
 
 log = get_logger(__name__)
 
@@ -63,6 +75,7 @@ class FinetuneWorker(QThread):
                  min_prompt: int = 20, max_prompt: int = 8000,
                  min_completion: int = 20, max_completion: int = 16000,
                  balance: bool = True, remove_pii: bool = True,
+                 pii_aggressive: bool = False,
                  task_types: list[str] | None = None,
                  use_token_limits: bool = False,
                  min_prompt_tokens: int = 5, max_prompt_tokens: int = 2000,
@@ -76,6 +89,7 @@ class FinetuneWorker(QThread):
         self.max_completion = max_completion
         self.balance = balance
         self.remove_pii = remove_pii
+        self.pii_aggressive = pii_aggressive
         self.task_types = task_types  # None = all types
         # Improvement 13: token-based limits
         self.use_token_limits = use_token_limits
@@ -89,12 +103,23 @@ class FinetuneWorker(QThread):
     def run(self):
         import time as _time
         try:
-            from .postproc.instruction_generator import InstructionGenerator
-            from .postproc.quality_finetune import filter_pairs, dedup_pairs
             from .postproc.dataset_balancer import balance_by_type, get_balance_stats
+            from .postproc.instruction_generator import InstructionGenerator
             from .postproc.pii_filter import clean_pair
+            from .postproc.prompt_variations import merge_custom_prompts
             from .postproc.prompt_variations import set_seed as set_prompt_seed
+            from .postproc.quality_finetune import dedup_pairs, filter_pairs
             from .postproc.token_utils import passes_token_limits
+
+            # Кастомные шаблоны (prompts.yaml рядом с проектом или из config)
+            prompts_file = getattr(self.config, "prompts_file", "") if self.config else ""
+            from pathlib import Path as _P
+            for candidate in (prompts_file, "prompts.yaml",
+                              str(_P(__file__).parent / "prompts.yaml")):
+                if candidate and _P(candidate).exists():
+                    if merge_custom_prompts(candidate):
+                        log.info(f"Custom prompt variations loaded from {candidate}")
+                    break
 
             # Seed the prompt variations RNG so that prompt selection is
             # reproducible across runs. Without this, the global _rng in
@@ -161,7 +186,6 @@ class FinetuneWorker(QThread):
             self.progress.emit(2, total_steps, f"Filtering {len(pairs)} pairs...")
             if self.use_token_limits:
                 # Improvement 13: use token-based limits
-                from .postproc.quality_finetune import filter_pairs as _fp
                 kept = []
                 rejected: dict[str, int] = {}
                 for pair in pairs:
@@ -202,13 +226,14 @@ class FinetuneWorker(QThread):
             t3 = _time.time()
             if self.remove_pii:
                 self.progress.emit(4, total_steps, "Removing PII...")
-                pairs = [clean_pair(p) for p in pairs]
+                pairs = [clean_pair(p, aggressive=self.pii_aggressive) for p in pairs]
             else:
                 self.progress.emit(4, total_steps, "Skipping PII removal (disabled)")
             log_stage("4_pii", pairs, t3)
 
             # Step 5: Balance
             t4 = _time.time()
+            before_balance = pairs
             if self.balance:
                 self.progress.emit(5, total_steps, "Balancing dataset...")
                 pairs = balance_by_type(pairs, max_per_type=self.max_per_type)
@@ -216,7 +241,8 @@ class FinetuneWorker(QThread):
                 self.progress.emit(5, total_steps, "Skipping balance (disabled)")
             log_stage("5_balance", pairs, t4)
 
-            stats = get_balance_stats(pairs)
+            # original=... показывает, сколько пар съедал max_per_type (I16)
+            stats = get_balance_stats(pairs, original=before_balance)
             stats["quality"] = q_stats
             stats["dedup"] = d_stats
             stats["stage_counts"] = stage_counts
@@ -649,6 +675,9 @@ class FinetuneWindow(QMainWindow):
             max_completion=self.spin_max_completion.value(),
             balance=self.chk_balance.isChecked(),
             remove_pii=self.chk_pii.isChecked(),
+            # «агрессивная» зачистка чисел включается только явно: по умолчанию
+            # в техническом корпусе это задержки/парт-номера (I12)
+            pii_aggressive=bool(getattr(self.config_finetune(), "pii_aggressive", False)),
             task_types=task_types,
             use_token_limits=self.chk_token_limits.isChecked(),
         )
@@ -989,7 +1018,10 @@ class FinetuneWindow(QMainWindow):
         from .postproc.instruction_generator import InstructionGenerator
 
         # Save raw pairs
-        pairs_file = Path(output_dir) / "instruction_pairs.jsonl"
+        # НЕ пишем в "instruction_pairs.jsonl": это выход предобучающего
+        # пайплайна (pipeline.run_postprocess), и экспорт FT затирал его
+        # молча, если пользователь выбрал ту же папку.
+        pairs_file = Path(output_dir) / "finetune_pairs.jsonl"
         InstructionGenerator().save(self._pairs, pairs_file)
 
         if self.chk_split.isChecked():

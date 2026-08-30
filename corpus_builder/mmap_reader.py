@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import json
 import mmap
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
 
 from .logging_setup import get_logger
 from .writer import is_gzip_file, open_corpus_reader

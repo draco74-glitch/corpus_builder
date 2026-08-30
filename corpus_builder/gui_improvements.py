@@ -18,28 +18,47 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
-from collections import deque
-from datetime import datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
 
-from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QRect, QPropertyAnimation, QEasingCurve, Property
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QIcon, QTextCursor, QPalette, QPixmap,
-    QSyntaxHighlighter, QTextCharFormat, QKeySequence, QDragEnterEvent, QDropEvent,
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QPalette,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextCursor,
 )
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QTextEdit, QTableWidget, QTableWidgetItem, QMenu, QFileDialog,
-    QMessageBox, QSplitter, QFrame, QToolButton, QSizePolicy, QComboBox,
-    QDialog, QFormLayout, QSpinBox, QCheckBox, QGroupBox, QTabWidget,
-    QHeaderView, QStatusBar, QProgressBar, QWizard, QWizardPage, QListWidget,
-    QListWidgetItem, QScrollArea, QGridLayout, QSlider,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    QWizard,
+    QWizardPage,
 )
 
 from .logging_setup import get_logger
@@ -150,8 +169,8 @@ class RecordsTableContextMenu:
     @staticmethod
     def open_url_in_browser(url: str) -> None:
         """Открыть URL в системном браузере."""
-        from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl(url))
 
     @staticmethod
@@ -324,7 +343,11 @@ class ToastNotification(QFrame):
     """Toast-уведомление — всплывающее окно в правом нижнем углу.
 
     Использование:
-        ToastNotification.show(parent, "Заголовок", "Текст сообщения", ToastNotification.INFO)
+        ToastNotification.display(parent, "Заголовок", "Текст", ToastNotification.INFO)
+
+    ВАЖНО (C5): фабричный метод НЕ может называться `show` — он перекрывал бы
+    `QWidget.show()`, и собственный вызов `self.show()` внутри `__init__`
+    падал с `TypeError: show() missing 3 required positional arguments`.
     """
 
     INFO = "info"
@@ -339,11 +362,11 @@ class ToastNotification(QFrame):
         "error":   {"bg": "#f44747", "border": "#ff5757"},
     }
 
-    @staticmethod
-    def show(parent: QWidget, title: str, message: str,
-             toast_type: str = "info", duration: int = 4000) -> "ToastNotification":
-        """Показать toast-уведомление."""
-        toast = ToastNotification(parent, title, message, toast_type, duration)
+    @classmethod
+    def display(cls, parent: QWidget, title: str, message: str,
+                toast_type: str = "info", duration: int = 4000) -> ToastNotification:
+        """Создать toast и показать его (не путать с QWidget.show)."""
+        toast = cls(parent, title, message, toast_type, duration)
         toast.raise_()
         return toast
 
@@ -397,7 +420,6 @@ class ToastNotification(QFrame):
     def _fade_in(self) -> None:
         """Анимация плавного появления."""
         self.setWindowOpacity(0.0)
-        effect = self.graphicsEffect()
         # Простая анимация через QTimer
         for i in range(1, 11):
             QTimer.singleShot(i * 30, lambda v=i: self.setWindowOpacity(v / 10.0))
@@ -1136,9 +1158,7 @@ class _YamlHighlighter(QSyntaxHighlighter):
                     start = colon_idx + 1 + (len(text[colon_idx + 1:]) - len(value))
                     if value.startswith('"') or value.startswith("'"):
                         self.setFormat(start, len(value), self.string_format)
-                    elif value.lower() in ("true", "false", "null", "none"):
-                        self.setFormat(start, len(value), self.number_format)
-                    elif value.replace(".", "").replace("-", "").replace("+", "").isdigit():
+                    elif value.lower() in ("true", "false", "null", "none") or value.replace(".", "").replace("-", "").replace("+", "").isdigit():
                         self.setFormat(start, len(value), self.number_format)
 
         if text.strip() == "---":
@@ -1416,22 +1436,15 @@ TRANSLATIONS = {
         "menu_docs": "Документация",
         "menu_stats": "Статистика корпуса",
         # Кнопки
-        "btn_browse": "Обзор...",
         "btn_generate": "⚙  Сгенерировать config.yaml",
-        "btn_stop": "⏹  Остановить",
         "btn_clear": "🗑  Очистить список",
         "btn_settings": "⚙  Настройки...",
         "btn_save": "💾  Сохранить",
         "btn_cancel": "Отмена",
         # Прочее
-        "status_ready": "Готов",
-        "status_working": "Работаю...",
         "config_label": "config.yaml:",
         "output_label": "Папка корпуса:",
         "progress_label": "Готов к запуску",
-        "tab_log": "Лог",
-        "tab_records": "Последние записи",
-        "tab_stats": "Статистика",
         # Меню
         "menu_file_title": "Файл",
         "menu_settings_title": "Настройки",
@@ -1541,8 +1554,6 @@ TRANSLATIONS = {
         "no_data_desc": "Укажите хотя бы одну тему/тег/категорию.",
         "about_title": "О программе",
         "about_text": "CorpusBuilder — сборщик сырого корпуса для pretraining LLM\nВерсия: 0.2.0\nПоддерживаемые источники: HTML, PDF, GitHub, StackExchange, DOAJ, arXiv, Crossref, Wikipedia",
-        "settings_applied": "Настройки применены",
-        "settings_saved": "Настройки сохранены и будут применены к следующим запускам.",
         "config_loaded": "Конфигурация загружена",
         "crawl_started": "Запуск краулинга...",
         "crawl_finished": "Готово",
@@ -1553,6 +1564,15 @@ TRANSLATIONS = {
         "toast_complete": "Задача завершена",
         "first_run": "Мастер первого запуска",
         "lang_changed_title": "Язык изменён",
+        "thread_busy_start": "Уже выполняется задача. Остановите её перед запуском новой.",
+        "export_failed": "Ошибка экспорта",
+        "export_ok": "Экспортировано",
+        "export_ok_desc": "Файлы созданы:",
+        "config_broken": "Ошибка конфигурации",
+        "update_none": "Нет доступных обновлений.",
+        "theme_changed": "Тема изменена",
+        "theme_restart": "Перезапустите CorpusBuilder для полного применения темы.",
+        "settings_reset_ok": "Настройки сброшены к defaults.",
 
         # Settings dialog
         "settings_title": "Настройки CorpusBuilder",
@@ -1689,21 +1709,14 @@ TRANSLATIONS = {
         "menu_about": "About",
         "menu_docs": "Documentation",
         "menu_stats": "Corpus statistics",
-        "btn_browse": "Browse...",
         "btn_generate": "⚙  Generate config.yaml",
-        "btn_stop": "⏹  Stop",
         "btn_clear": "🗑  Clear list",
         "btn_settings": "⚙  Settings...",
         "btn_save": "💾  Save",
         "btn_cancel": "Cancel",
-        "status_ready": "Ready",
-        "status_working": "Working...",
         "config_label": "config.yaml:",
         "output_label": "Corpus folder:",
         "progress_label": "Ready to start",
-        "tab_log": "Log",
-        "tab_records": "Recent records",
-        "tab_stats": "Statistics",
         # Menus
         "menu_file_title": "File",
         "menu_settings_title": "Settings",
@@ -1813,8 +1826,6 @@ TRANSLATIONS = {
         "no_data_desc": "Specify at least one topic/tag/category.",
         "about_title": "About",
         "about_text": "CorpusBuilder — raw corpus builder for LLM pretraining\nVersion: 0.2.0\nSupported sources: HTML, PDF, GitHub, StackExchange, DOAJ, arXiv, Crossref, Wikipedia",
-        "settings_applied": "Settings applied",
-        "settings_saved": "Settings saved and will be applied on next runs.",
         "config_loaded": "Configuration loaded",
         "crawl_started": "Starting crawl...",
         "crawl_finished": "Done",
@@ -1825,6 +1836,15 @@ TRANSLATIONS = {
         "toast_complete": "Task completed",
         "first_run": "First-Run Wizard",
         "lang_changed_title": "Language Changed",
+        "thread_busy_start": "A task is already running. Stop it before starting another.",
+        "export_failed": "Export failed",
+        "export_ok": "Exported",
+        "export_ok_desc": "Files created:",
+        "config_broken": "Configuration error",
+        "update_none": "No updates available.",
+        "theme_changed": "Theme changed",
+        "theme_restart": "Restart CorpusBuilder to fully apply the theme.",
+        "settings_reset_ok": "Settings reset to defaults.",
 
         # Settings dialog
         "settings_title": "CorpusBuilder Settings",

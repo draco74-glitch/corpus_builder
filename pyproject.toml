@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "corpus-builder"
-version = "0.2.0"
+version = "0.2.1"
 description = "Сборщик сырого корпуса для pretraining LLM с дедупликацией и нормализацией"
 # ВАЖНО: PySide6 (нужен для GUI) не имеет wheels для Python 3.14+.
 # Поддерживаемые версии: 3.10, 3.11, 3.12, 3.13.

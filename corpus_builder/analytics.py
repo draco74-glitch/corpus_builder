@@ -9,16 +9,12 @@
 from __future__ import annotations
 
 import json
-import os
 from collections import Counter, defaultdict
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-
 
 # Палитра для согласованности с главным окном
 DARK_BG = "#1e1e1e"

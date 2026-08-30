@@ -1,6 +1,9 @@
 # ===== Sources =====
-# Укажите ссылки, которые нужно обойти. type может быть:
-#   html, pdf, github_repo, stackexchange, forum
+# Тип источника (key `type`) — один из:
+#   html, pdf, github_repo, stackexchange, forum,
+#   doaj, arxiv, crossref, wikipedia
+# (полный список — `corpus_builder.models.SOURCE_TYPES`; сверяется с реестром
+#  краулеров тестом tests/test_review_fixes_pipeline.py)
 
 sources:
   # --- HTML-статьи и блоги ---
@@ -23,22 +26,62 @@ sources:
     include_files: ["*.md", "*.kicad_sch", "*.kicad_pcb", "*.csv", "*.dcm", "*.lib"]
     categories: [kicad, library]
 
-  # --- StackExchange: вопросы по электронике ---
-  - url: "https://electronics.stackexchange.com/questions/322180"
+  # --- StackExchange: вопрос ИЛИ список по тегу ---
+  - url: "https://electronics.stackexchange.com/questions/1"
     type: stackexchange
     categories: [electronics, q_and_a]
+
+  - url: "https://electronics.stackexchange.com/questions/tagged/kicad"
+    type: stackexchange            # список топ-вопросов тега
+    categories: [kicad]
+
+  # --- Wikipedia: REST API вместо HTML-скрейпинга ---
+  - url: "https://en.wikipedia.org/wiki/Operational_amplifier"
+    type: wikipedia
+    categories: [encyclopedia, analog]
+
+  # --- Научные API: url = поисковый запрос, категория или DOI ---
+  - url: "cat:eess.SP"             # или "https://arxiv.org/list/eess.SP/recent"
+    type: arxiv
+    categories: [signals]
+
+  - url: "power electronics"
+    type: doaj
+    categories: [journals]
+
+  - url: "10.1016/j.sna.2004.03.010"   # DOI ищется напрямую, не как текст
+    type: crossref
+    categories: [mems]
+
+  # --- локальный файл можно отключить от скачивания вложений ---
+  - url: "https://example.com/article"
+    type: html
+    download_files: false
+
+  # --- обход robots.txt ДЛЯ ОДНОГО ИСТОЧНИКА ---
+  # Часть сайтов (в т.ч. StackExchange) отдают 403 на сам robots.txt — тогда
+  # конвейер считает доступ закрытым (RFC 9309) и источник пропускается.
+  # Для краулеров, которые ходят в API другого домена, это решение пользователя:
+  - url: "https://electronics.stackexchange.com/questions/tagged/kicad"
+    type: stackexchange
+    ignore_robots: true
 
 # ===== Output =====
 output:
   corpus_file: "corpus_output/raw_corpus.jsonl"
   download_dir: "downloaded_files"
-  error_log: "corpus_output/errors.jsonl"
-  state_file: "corpus_output/state.json"
-  log_file: "corpus_output/crawl.log"
+  # state_file / error_log / log_file по умолчанию лежат РЯДОМ с corpus_file
+  # (раньше они всегда смотрели в ./corpus_output/, и resume находил чужой state)
   max_file_size_mb: 50
   request_delay: 2          # задержка между запросами на один домен (сек)
-  request_timeout: 30
-  user_agent: "CorpusBuilder/0.2 (research; +https://github.com/your/corpus-builder)"
+  request_timeout: 30       # connect+read таймаут одного HTTP-запроса
+  user_agent: "CorpusBuilder/0.2.1 (research; +https://github.com/your/corpus-builder)"
+  contact_email: ""         # вежливый контакт для Crossref/Wikipedia (mailto в UA)
+  respect_robots_txt: true  # false — обходить robots.txt (осознанно!)
+  robots_fail_open: false   # true — считать «можно», если robots.txt не загрузился
+  use_http_cache: true      # requests-cache + SQLite WAL
+  cache_ttl_hours: 168
+  revalidate_cached_files: true   # HEAD-проверка размера скачанного файла (I5)
 
 # ===== Crawler-specific =====
 crawlers:
@@ -51,16 +94,30 @@ crawlers:
     ocr_enabled: true
     ocr_lang: "rus+eng"
     ocr_min_chars_per_page: 50   # если меньше — применить OCR
+    ocr_parallel_workers: 1      # >1 — гонять tesseract по страницам параллельно
     image_min_width: 300
     image_min_height: 200
-    extract_tables: false       # pdfplumber — отключено по умолчанию (тяжело)
+    extract_tables: false        # pdfplumber — отключено по умолчанию (тяжело)
+    two_column_detection: true   # вёрстка определяется ПО СТРАНИЦАМ
+    two_column_x_threshold: 0.35
+    filter_schematic_images: true
+    use_toc_as_structure: true
   github:
-    token_env: "GITHUB_TOKEN"   # переменная окружения с токеном
-    branch: null                # null = узнать через API (default_branch)
+    token_env: "GITHUB_TOKEN"    # переменная окружения с токеном
+    branch: null                 # null = узнать через API (default_branch)
     include_files: ["*.md", "*.kicad_sch", "*.kicad_pcb", "*.csv", "*.dcm", "*.lib"]
+    crawl_issues: false
+    crawl_issues_max: 50         # >100 работает: запросы идут постранично
+    crawl_issues_state: "all"
+    issues_comments_max: 20      # комментарии к issue/PR (0 — только тело)
+    crawl_wiki: false            # берётся из отдельного репо {repo}.wiki
+    crawl_docs_dir: true
+    docs_extensions: [".md", ".rst", ".txt"]
+    max_archive_mb: 250          # архив больше — пропускаем, в RAM не грузим
   stackexchange:
     api_key_env: "STACKEXCHANGE_KEY"  # опционально, для повышенного лимита
     site: "electronics"               # сайт по умолчанию
+    max_list_questions: 10            # сколько вопросов брать из ?/tagged/...
 
 # ===== Quality filter =====
 quality:
@@ -70,17 +127,54 @@ quality:
   max_dup_line_ratio: 0.50
   language: bilingual          # bilingual | ru | en | multi
   languages_allowed: [ru, en]
+  max_code_ratio: 0.50
+  # Спам-фильтр реагирует ТОЛЬКО на явные признаки рекламы (купить/скидка/
+  # казино/займы/«ссылочная ферма») в тексте без технической лексики.
+  # Правила вида «длинный текст без слов про электронику = спам» удалены: оно
+  # сжигало весь некомпонентный корпус (см. quality_filters._SPAM_PATTERNS).
+  spam_check: true
+  perplexity_check: false
+  max_perplexity: 1000.0
+  perplexity_model_path: null
 
 # ===== Deduplication =====
+# identidade записи = её позиция/содержимое, а НЕ source_url: два разных
+# текста под одним URL не роняют пост-процесс и не теряются молча.
 dedup:
   exact: true                  # sha1 по нормализованному тексту
   minhash: true                # нечёткая дедупликация
   minhash_num_perm: 128
   minhash_threshold: 0.85      # Jaccard > 0.85 = дубликат
   dedup_images: true           # по sha1(image_bytes)
+  streaming: false             # MinHash по частям (корпус не лезет whole в RAM)
+  incremental: false           # персистентный индекс между запусками
+  incremental_index_file: "corpus_output/.dedup_index.pkl"
+
+# ===== Export =====
+export:
+  write_gzip: false            # плюс corpus_final.jsonl.gz
+  keep_intermediate: true      # deduped.jsonl / filtered.jsonl
+
+# ===== Fine-tuning =====
+finetune:
+  max_per_type: 1000           # 0 = без ограничения (обрезка больше не «невидимая»)
+  min_prompt_chars: 20
+  max_prompt_chars: 8000
+  min_completion_chars: 20
+  max_completion_chars: 16000
+  balance_classes: true
+  remove_pii: true
+  pii_aggressive: false        # true — резать и «похожие на телефон» числа (I12)
+  formats: [jsonl, chatml, alpaca, sharegpt]
 
 # ===== Pipeline =====
 pipeline:
   resume: true
   save_checkpoint_every: 50
   progress_bar: true
+  per_url_timeout_minutes: 10
+  use_async: false             # true — async-краулинг (тот же session/robots/лимиты)
+  max_concurrent_total: 8
+  max_concurrent_per_domain: 1 # 1 = вежливо; выше только для своих доменов
+  parallel_postproc: false     # quality-фильтр в несколько процессов
+  parallel_workers: 0          # 0 = cpu_count()-1

@@ -1,16 +1,19 @@
 """Нативный асинхронный HTML-краулер на aiohttp."""
+
+# Статус: НЕ подключён к реестру краулеров (`get_crawler`): async-путь
+# (`async_pipeline.run_async_crawl`) гоняет синхронные краулеры в
+# executor'е, сохраняя session с UA/ретраями/кэшем, robots-проверку и
+# rate limiter. Этот модуль их не применяет — заделка на случай
+# отдельного нативного aiohttp-пути.
+
+
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-from urllib.parse import urljoin, urlparse
 
 import aiohttp
-from bs4 import BeautifulSoup
 
-from ..http import is_blocked_url
 from ..logging_setup import get_logger
-from ..models import AppConfig, CorpusRecord, DownloadedFile
 
 log = get_logger(__name__)
 

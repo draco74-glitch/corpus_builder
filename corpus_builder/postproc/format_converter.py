@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterator
 
 from ..logging_setup import get_logger
 from ..writer import open_corpus_reader

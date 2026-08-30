@@ -1,12 +1,5 @@
 """Тесты на улучшения интерфейса (A-O)."""
 import json
-import os
-import tempfile
-from pathlib import Path
-from unittest import mock
-
-import pytest
-
 
 # ============================================================
 # A. Drag-and-Drop — тестируем только логику (без Qt)
@@ -199,7 +192,7 @@ def test_translation_unknown_key():
 
 def test_get_language():
     """Получение текущего языка."""
-    from corpus_builder.gui_improvements import set_language, get_language
+    from corpus_builder.gui_improvements import get_language, set_language
 
     set_language("ru")
     assert get_language() == "ru"

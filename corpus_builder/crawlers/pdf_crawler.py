@@ -2,16 +2,19 @@
 таблицы через pdfplumber + фильтр схем через OCR-ключевые слова."""
 from __future__ import annotations
 
+import hashlib
 import io
 import os
-import hashlib
 from pathlib import Path
 
-import fitz  # PyMuPDF
+try:                                  # PyMuPDF >= 1.24: новое имя пакета
+    import pymupdf as fitz
+except ImportError:                 # pragma: no cover — старые версии
+    import fitz
 
 from ..http import download_file
 from ..logging_setup import get_logger
-from ..models import AppConfig, CorpusRecord, DownloadedFile
+from ..models import CorpusRecord, DownloadedFile
 from .base import BaseCrawler
 
 log = get_logger(__name__)
@@ -53,97 +56,98 @@ class PdfCrawler(BaseCrawler):
         except Exception:
             toc = []
 
-        # Определяем, является ли PDF двухколоночным (на первой странице с текстом)
-        is_two_column = False
+        # Двухколоночность определяем ПО СТРАНИЦАМ (I10): документ может
+        # смешивать одноколоночные титулы/приложения с двухколоночным телом, и
+        # «среднее по документу» решение переставляло блоки там, где это
+        # не нужно.
+        two_col_pages: list[bool] = [False] * page_count
         if cfg.two_column_detection:
-            is_two_column = self._detect_two_column(doc, cfg.two_column_x_threshold)
-            if is_two_column:
-                log.info(f"PDF {url}: detected two-column layout")
+            two_col_pages = self._two_column_pages(doc, cfg.two_column_x_threshold)
+        pages_two_column = sum(two_col_pages)
+        if pages_two_column:
+            log.info(f"PDF {url}: two-column layout on {pages_two_column}/{page_count} pages")
 
-        for page_num in range(page_count):
+        def _page_text(page_num: int) -> str:
             page = doc[page_num]
+            if two_col_pages[page_num]:
+                return self._extract_two_column_text(page)
+            return page.get_text() or ""
 
-            # Извлечение текста: разный подход для двухколоночных PDF
-            if is_two_column:
-                page_text = self._extract_two_column_text(page)
-            else:
-                page_text = page.get_text() or ""
+        try:
+            # 1. базовый текст всех страниц
+            page_texts = [_page_text(n) for n in range(page_count)]
 
-            full_text.append(page_text)
+            # 2. OCR страниц с «мало текста» — параллельно (tesseract — внешний
+            #    процесс, GIL не мешает); раньше страницы шли строго последовательно,
+            #    а настройка ocr_parallel_workers никуда не передавалась (I4).
+            ocr_pages = [n for n in range(page_count)
+                         if cfg.ocr_enabled
+                         and len(page_texts[n].strip()) < cfg.ocr_min_chars_per_page]
+            ocr_results: dict[int, str] = {}
+            if ocr_pages:
+                # PyMuPDF Document НЕ тредобезопасен: рендер страниц делаем
+                # последовательно в основном потоке, параллелим только вызов
+                # tesseract (внешний процесс, GIL не мешает).
+                rendered = {n: self._render_page_png(doc, n) for n in ocr_pages}
+                jobs = [(n, png) for n, png in rendered.items() if png]
+                workers = max(1, int(cfg.ocr_parallel_workers or 1))
+                if workers > 1 and len(jobs) > 1:
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as ex:
+                        futs = {ex.submit(self._ocr_png_safe, png, cfg.ocr_lang): n
+                                for n, png in jobs}
+                        for fut, n in futs.items():
+                            text = fut.result()
+                            if text:
+                                ocr_results[n] = text
+                else:
+                    for n, png in jobs:
+                        text = self._ocr_png_safe(png, cfg.ocr_lang)
+                        if text:
+                            ocr_results[n] = text
 
-            # Если текста мало — пробуем OCR
-            if cfg.ocr_enabled and len(page_text.strip()) < cfg.ocr_min_chars_per_page:
-                try:
-                    ocr_text = self._ocr_page(page, cfg.ocr_lang)
-                    if ocr_text and len(ocr_text) > len(page_text):
-                        full_text[-1] = ocr_text
-                        ocr_applied = True
-                except Exception as e:
-                    log.debug(f"OCR failed on page {page_num} of {url}: {e}")
+            full_text: list[str] = []
+            ocr_applied = False
+            for n in range(page_count):
+                text = page_texts[n]
+                ocr_text = ocr_results.get(n)
+                if ocr_text and len(ocr_text) > len(text):
+                    text = ocr_text
+                    ocr_applied = True
+                full_text.append(text)
 
-            # Извлечение таблиц через pdfplumber (опционально)
+            # 3. таблицы — ОДИН проход pdfplumber по всему документу
+            #    (I11: раньше pdfplumber.open() вызывался на каждой странице,
+            #    т.е. файл парсился page_count раз → O(pages²)).
             if cfg.extract_tables:
-                try:
-                    tables = self._extract_tables_pdfplumber(pdf_path, page_num)
-                    if tables:
-                        has_tables = True
-                        for i, table in enumerate(tables):
-                            all_tables.append({
-                                "page": page_num,
-                                "table_index": i,
-                                "rows": table,
-                                "n_rows": len(table),
-                                "n_cols": len(table[0]) if table else 0,
-                            })
-                except Exception as e:
-                    log.debug(f"Table extraction failed on page {page_num}: {e}")
-
-            # Извлечение изображений
-            try:
-                images = page.get_images(full=True)
-            except Exception:
-                images = []
-            if images:
-                has_images = True
-            for img_index, img in enumerate(images):
-                xref = img[0]
-                try:
-                    base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    ext = base_image.get("ext", "png")
-                    # Фильтр по размеру
-                    from PIL import Image
-                    im = Image.open(io.BytesIO(image_bytes))
-                    width, height = im.size
-                    if width < cfg.image_min_width or height < cfg.image_min_height:
+                for page_num, tables in enumerate(self._extract_tables_all(pdf_path)):
+                    if not tables:
                         continue
+                    has_tables = True
+                    for i, table in enumerate(tables):
+                        all_tables.append({
+                            "page": page_num,
+                            "table_index": i,
+                            "rows": table,
+                            "n_rows": len(table),
+                            "n_cols": len(table[0]) if table else 0,
+                        })
 
-                    # Фильтр схем: проверяем OCR на ключевые слова
-                    is_schematic = True
-                    if cfg.filter_schematic_images:
-                        is_schematic = self._is_image_schematic(im, cfg.schematic_keywords)
-                    if not is_schematic:
-                        continue  # пропускаем логотипы и декорации
-
-                    # Уникальное имя: pdf_<sha1prefix>_p<page>_i<idx>.<ext>
-                    prefix = hashlib.sha1(image_bytes).hexdigest()[:12]
-                    img_filename = f"pdf_{prefix}_p{page_num}_i{img_index}.{ext}"
-                    img_path = os.path.join(self.config.output.download_dir, img_filename)
-                    if not os.path.exists(img_path):
-                        with open(img_path, "wb") as f:
-                            f.write(image_bytes)
-                    size = os.path.getsize(img_path)
-                    schematics.append(DownloadedFile(
-                        type="image",
-                        original_url=None,
-                        local_path=img_path,
-                        sha1=prefix,
-                        size_bytes=size,
-                    ))
-                except Exception as e:
-                    log.debug(f"Image extract failed on {url} page {page_num} img {img_index}: {e}")
-
-        doc.close()
+            # 4. изображения страниц
+            for page_num in range(page_count):
+                page = doc[page_num]
+                try:
+                    images = page.get_images(full=True)
+                except Exception:
+                    images = []
+                if images:
+                    has_images = True
+                for img_index, img in enumerate(images):
+                    self._extract_page_image(doc, img, page_num, img_index, cfg, schematics)
+        finally:
+            # close() обязан быть в finally: раньше он стоял после цикла и при
+            # исключении файл оставался открытым (I11).
+            doc.close()
 
         # Структурируем контент по TOC, если есть
         content = "\n".join(full_text).strip()
@@ -168,7 +172,8 @@ class PdfCrawler(BaseCrawler):
                 "has_tables": has_tables,
                 "tables_count": len(all_tables),
                 "ocr_applied": ocr_applied,
-                "is_two_column": is_two_column,
+                "is_two_column": bool(pages_two_column),
+                "two_column_pages": pages_two_column,
                 "toc": toc if toc else None,
                 "title": (toc[0][1] if toc else Path(pdf_path).stem),
             },
@@ -179,43 +184,150 @@ class PdfCrawler(BaseCrawler):
     # Расширенные методы для PDF (Этап 3)
     # ============================================================
 
-    def _detect_two_column(self, doc, x_threshold: float = 0.35) -> bool:
-        """Определить, является ли PDF двухколоночным.
+    @classmethod
+    def _detect_two_column(cls, doc, x_threshold: float = 0.35) -> bool:
+        """Сводный признак «в документе есть двухколоночные страницы»."""
+        return any(cls._two_column_pages(doc, x_threshold))
 
-        Алгоритм: на первых 5 страницах с текстом собираем координаты x0 всех
-        текстовых блоков. Если > 30% блоков имеют x0 < page_width * 0.35 —
-        это двухколоночная вёрстка (по эмпирическим тестам).
+    @classmethod
+    def _two_column_pages(cls, doc, x_threshold: float = 0.35,
+                          sample_pages: int = 10) -> list[bool]:
+        """Признак двухколоночной вёрстки для КАЖДОЙ страницы.
+
+        ПРЕЖНИЙ алгоритм объявлял двухколоночным ЛЮБОЙ pdf, где ≥30% блоков
+        начинаются левее 35% ширины страницы; у обычной одноколоночной вёрстки
+        так начинаются ~100% блоков, поэтому детектор срабатывал почти всегда,
+        а `_extract_two_column_text` затем переставлял текст (колонтитул
+        уезжал в конец страницы) — I10.
+
+        Новый критерий (по каждой странице отдельно) — два признака сразу:
+          1) блоки начинаются и у левого поля, и примерно от середины
+             страницы (кластер x0 в окне x_threshold+0.05 … +0.35);
+          2) блоки узкие: медианная ширина < 55% ширины страницы, т.е. текст
+             не растянут на всю ширину.
+        Страницы вне `sample_pages` наследуют классификацию последней
+        проверенной — типовой datasheet однороден, а читать блоки всех
+        страниц документа слишком дорого.
         """
-        checked_pages = 0
-        left_blocks = 0
-        total_blocks = 0
+        flags: list[bool] = []
+        last = False
+        for page_num in range(len(doc)):
+            if page_num < sample_pages:
+                last = cls._page_is_two_column(doc[page_num], x_threshold)
+            flags.append(last)
+        return flags
 
-        for page_num in range(min(len(doc), 10)):
-            page = doc[page_num]
-            try:
-                blocks = page.get_text("blocks") or []
-            except Exception:
-                continue
-            if not blocks:
-                continue
-            page_width = page.rect.width
-            if page_width == 0:
-                continue
-            threshold_x = page_width * x_threshold
-            for b in blocks:
-                if len(b) < 5:
-                    continue
-                x0 = b[0]
-                if x0 < threshold_x:
-                    left_blocks += 1
-                total_blocks += 1
-            checked_pages += 1
-            if checked_pages >= 5:
-                break
-
-        if total_blocks < 10:
+    @staticmethod
+    def _page_is_two_column(page, x_threshold: float = 0.35) -> bool:
+        """Двухколоночная ли КОНКРЕТНАЯ страница (см. `_two_column_pages`)."""
+        try:
+            blocks = page.get_text("blocks") or []
+        except Exception:
             return False
-        return (left_blocks / total_blocks) > 0.30
+        page_width = page.rect.width
+        if not blocks or not page_width:
+            return False
+
+        starts: list[float] = []
+        widths: list[float] = []
+        for b in blocks:
+            if len(b) < 5 or not (b[4] or "").strip():
+                continue
+            starts.append(b[0] / page_width)
+            widths.append((b[2] - b[0]) / page_width)
+        if len(starts) < 5:
+            return False
+
+        right_lo, right_hi = x_threshold + 0.05, x_threshold + 0.35
+        rightish = sum(1 for x in starts if right_lo <= x <= right_hi) / len(starts)
+        leftish = sum(1 for x in starts if x < 0.30) / len(starts)
+        median_width = sorted(widths)[len(widths) // 2]
+        return rightish >= 0.20 and leftish >= 0.30 and median_width < 0.55
+
+    # ============================================================
+    # Вспомогательные стадии разбора PDF
+    # ============================================================
+
+    def _extract_page_image(self, doc, img: tuple, page_num: int, img_index: int,
+                            cfg, schematics: list[DownloadedFile]) -> None:
+        """Одна картинка со страницы: фильтр по размеру/схеме и сохранение."""
+        xref = img[0]
+        try:
+            base_image = doc.extract_image(xref)
+            image_bytes = base_image["image"]
+            ext = base_image.get("ext", "png")
+
+            from PIL import Image
+            im = Image.open(io.BytesIO(image_bytes))
+            width, height = im.size
+            if width < cfg.image_min_width or height < cfg.image_min_height:
+                return
+
+            # Фильтр схем: OCR на наличие ключевых слов
+            if cfg.filter_schematic_images and not self._is_image_schematic(
+                    im, cfg.schematic_keywords):
+                return            # логотип/декорация
+
+            prefix = hashlib.sha1(image_bytes).hexdigest()[:12]
+            img_filename = f"pdf_{prefix}_p{page_num}_i{img_index}.{ext}"
+            img_path = os.path.join(self.config.output.download_dir, img_filename)
+            if not os.path.exists(img_path):
+                with open(img_path, "wb") as f:
+                    f.write(image_bytes)
+            schematics.append(DownloadedFile(
+                type="image",
+                original_url=None,
+                local_path=img_path,
+                sha1=prefix,
+                size_bytes=os.path.getsize(img_path),
+            ))
+        except Exception as e:
+            log.debug(f"Image extract failed on page {page_num} img {img_index}: {e}")
+
+    @staticmethod
+    def _render_page_png(doc, page_num: int, dpi: int = 200) -> bytes | None:
+        """Рендер страницы в PNG (только в основном потоке)."""
+        try:
+            return doc[page_num].get_pixmap(dpi=dpi).tobytes("png")
+        except Exception as e:                     # noqa: BLE001
+            log.debug(f"page render failed on {page_num}: {e}")
+            return None
+
+    @staticmethod
+    def _ocr_png_safe(png: bytes, lang: str) -> str | None:
+        """OCR по уже отрендеренной странице; вместо исключения — None (для pool'а)."""
+        try:
+            import io
+            import pytesseract
+            from PIL import Image
+            return pytesseract.image_to_string(Image.open(io.BytesIO(png)), lang=lang)
+        except Exception as e:                     # noqa: BLE001
+            log.debug(f"OCR failed: {e}")
+            return None
+
+    @staticmethod
+    def _extract_tables_all(pdf_path: str) -> list[list[list[list[str]]]]:
+        """Таблицы всех страниц за ОДИН проход pdfplumber (I11).
+
+        Возвращает список по числу страниц; элемент — список таблиц страницы.
+        """
+        try:
+            import pdfplumber
+        except ImportError:
+            log.debug("pdfplumber not installed, skipping table extraction")
+            return []
+        per_page: list[list[list[list[str]]]] = []
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page in pdf.pages:
+                    try:
+                        per_page.append([t for t in (page.extract_tables() or []) if t])
+                    except Exception as e:
+                        log.debug(f"pdfplumber page error: {e}")
+                        per_page.append([])
+        except Exception as e:
+            log.debug(f"pdfplumber error on {pdf_path}: {e}")
+        return per_page
 
     def _extract_two_column_text(self, page) -> str:
         """Извлечь текст из двухколоночной страницы, не перемешивая колонки.
@@ -241,7 +353,7 @@ class PdfCrawler(BaseCrawler):
         for b in blocks:
             if len(b) < 5:
                 continue
-            x0, y0, x1, y1, text = b[0], b[1], b[2], b[3], b[4]
+            x0, y0, text = b[0], b[1], b[4]
             if not text or not text.strip():
                 continue
             # Если блок начинается в левой половине
@@ -258,59 +370,59 @@ class PdfCrawler(BaseCrawler):
         parts.extend(b[2] for b in right_blocks)
         return "\n".join(parts)
 
-    def _extract_tables_pdfplumber(self, pdf_path: str, page_num: int) -> list[list[list[str]]]:
-        """Извлечь таблицы со страницы через pdfplumber.
+    _tesseract_checked = False
+    _tesseract_available = False
 
-        Возвращает список таблиц, каждая таблица — список строк, каждая строка — список ячеек.
+    @classmethod
+    def _tesseract_ok(cls) -> bool:
+        """Есть ли бинарь tesseract (кэшируем проверку — она дорогая)."""
+        if not cls._tesseract_checked:
+            cls._tesseract_checked = True
+            try:
+                import pytesseract
+                pytesseract.get_tesseract_version()
+                cls._tesseract_available = True
+            except Exception as e:                # noqa: BLE001
+                log.info(f"tesseract недоступен ({type(e).__name__}); "
+                         f"OCR-фильтры изображений будут пропущены")
+                cls._tesseract_available = False
+        return cls._tesseract_available
+
+    @classmethod
+    def _is_image_schematic(cls, image, keywords: list[str]) -> bool:
+        """Сохранять ли изображение как «схему» (OCR по ключевым словам).
+
+        Логика (I12): раньше при ANY сбое OCR возвращалось True — т.е. без
+        установленного tesseract каждая картинка ≥ image_min_* попадала в
+        downloaded_files, и «фильтр схем» превращался в «сохранить всё».
+        Теперь: если OCR недоступен, фильтр НЕ применять (не сохранять ничего
+        по умолчанию), а не сохранять всё.
         """
-        try:
-            import pdfplumber
-        except ImportError:
-            log.debug("pdfplumber not installed, skipping table extraction")
-            return []
-        tables_data = []
-        try:
-            with pdfplumber.open(pdf_path) as pdf:
-                if page_num < len(pdf.pages):
-                    page = pdf.pages[page_num]
-                    tables = page.extract_tables() or []
-                    for table in tables:
-                        if table:
-                            tables_data.append(table)
-        except Exception as e:
-            log.debug(f"pdfplumber error on page {page_num}: {e}")
-        return tables_data
-
-    def _is_image_schematic(self, image, keywords: list[str]) -> bool:
-        """Проверить, является ли изображение схемой/диаграммой через OCR.
-
-        Если OCR находит хотя бы одно ключевое слово (figure, circuit, diagram и т.д.)
-        или не находит текста вообще (тогда это, скорее всего, схема, а не логотип
-        с названием бренда) — считаем схемой.
-
-        Реализация упрощённая: используем tesseract для распознавания, затем
-        ищем ключевые слова. Если текста нет — пропускаем как возможный логотип.
-        """
+        if not cls._tesseract_ok():
+            log.debug("schematic filter skipped: tesseract unavailable")
+            return False
         try:
             import pytesseract
             text = pytesseract.image_to_string(image, lang="eng").lower()
-            # Если OCR ничего не дал — это, скорее всего, чистая схема (без подписей)
-            # Сохраняем как схему
-            if not text.strip():
-                return True
-            for kw in keywords:
-                if kw.lower() in text:
-                    return True
-            # Если есть текст, но без ключевых слов — возможно, это логотип/баннер
-            # Пропускаем, если текст короткий (логотипы обычно содержат < 30 символов)
-            if len(text.strip()) < 30:
-                return False
-            # Длинный текст без ключевых слов — это, скорее всего, таблица или график
-            # Сохраняем на всякий случай
+        except Exception as e:                     # noqa: BLE001
+            log.debug(f"OCR on image failed, image skipped: {e}")
+            return False
+
+        # Документированное поведение: пустой OCR = вероятнее всего логотип или
+        # чистая картинка без подписей → НЕ сохраняем.
+        if not text.strip():
+            return False
+
+        if any(kw.lower() in text for kw in keywords):
             return True
-        except Exception:
-            # OCR не сработал — сохраняем как схему (страховка)
-            return True
+
+        # Длинный текст без ключевых слов — таблица/график с подписями.
+        # Сохраняем только если это похоже на техническую подпись, иначе —
+        # декорация/баннер с кучей текста.
+        return len(text.strip()) >= 30 and any(
+            w in text for w in ("fig", "table", "pin", "voltage", "current",
+                                "circuit", "supply", "output", "input", "max",
+                                "рис", "табл", "вывод", "напряжени", "ток"))
 
     def _structure_by_toc(self, content: str, toc: list) -> str:
         """Использовать TOC для разметки разделов.
@@ -344,12 +456,13 @@ class PdfCrawler(BaseCrawler):
                 parts.append("| " + " | ".join(cells) + " |")
         return "\n".join(parts)
 
-    @staticmethod
-    def _ocr_page(page, lang: str) -> str:
-        """Прогнать страницу через tesseract."""
-        import pytesseract
-        # Рендерим страницу в изображение с разумным DPI
-        pix = page.get_pixmap(dpi=200)
-        from PIL import Image
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
-        return pytesseract.image_to_string(img, lang=lang)
+    @classmethod
+    def _ocr_page(cls, page, lang: str) -> str:
+        """OCR страницы (синхронный convenience-вариант для одного вызова)."""
+        png = cls._render_page_png(page.parent, page.number)
+        if png is None:
+            return ""
+        text = cls._ocr_png_safe(png, lang)
+        if text is None:
+            raise RuntimeError("tesseract OCR failed")
+        return text

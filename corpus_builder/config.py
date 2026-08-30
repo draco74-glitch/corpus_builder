@@ -7,8 +7,8 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from .models import AppConfig
 from .logging_setup import get_logger
+from .models import AppConfig
 
 log = get_logger(__name__)
 

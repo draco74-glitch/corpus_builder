@@ -5,15 +5,54 @@
   2. Вопрос ↔ Принятый ответ: из StackExchange-записей
 
 Выходной формат — JSONL с полями {prompt, completion, source, task_type}.
+
+Единая лексика task_type (I14): имена типов совпадают с теми, что выдаёт
+`postproc/instruction_generator.py` (`article_summary`, `code_explanation`,
+`datasheet_specs`, `kicad_to_description`, `qa_stackexchange`, `faq_qa`, …), и
+тексты промптов берутся из `prompt_variations` — один и тот же датасет,
+собранный двумя путями, не различается разметкой, а шаблоны настраиваются
+через prompts.yaml вместо хардкода на одном языке.
 """
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..logging_setup import get_logger
+from .prompt_variations import get_prompt
 
 log = get_logger(__name__)
+
+
+# ============================================================
+# Языковые маркеры (I14)
+# ============================================================
+# Краулер Forum/StackExchange пишет заголовки треда на русском ИЛИ английском
+# в зависимости от языка площадки. Раньше разбор жёстко зависел от русских
+# строк («## Вопрос», «[ПРИНЯТ]»), и англоязычный тред давал 0 пар — молча,
+# без единого предупреждения. Теперь поддерживаем оба набора маркеров.
+Q_MARKERS = ("## Вопрос", "## Вопрос:", "## Question", "## Question:")
+A_MARKERS = ("## Ответ", "## Ответ:", "## Answer", "## Answer:")
+ACCEPTED_MARKERS = ("[ПРИНЯТ]", "[ACCEPTED]", "(принят)", "(accepted)")
+
+
+def _find_marker(content: str, markers: tuple[str, ...]) -> str:
+    """Первый маркер, реально присутствующий в контенте."""
+    for m in markers:
+        if m in content:
+            return m
+    return ""
+
+
+def _is_russian(text: str) -> bool:
+    """Доля кириллицы в тексте — по ней выбираем язык промпта-каркаса."""
+    if not text:
+        return False
+    sample = text[:2000]
+    cyr = sum(1 for c in sample if "\u0410" <= c.upper() <= "\u042F")
+    lat = sum(1 for c in sample if c.isascii() and c.isalpha())
+    return cyr > lat
 
 
 def _read_downloaded_text(record: dict, predicate) -> str | None:
@@ -60,21 +99,16 @@ def extract_kicad_pairs(record: dict) -> list[dict]:
         if len(kicad_text) < 50:
             continue
         pairs.append({
-            "prompt": (
-                "На основе следующего KiCad-описания проекта сгенерируй текстовое "
-                "описание схемы, ключевые компоненты и назначение устройства.\n\n"
-                f"KiCad-файл ({f.get('original_file', '')}):\n{kicad_text[:8000]}"
-            ),
+            "prompt": get_prompt(
+                "kicad_to_description",
+                kicad=f"KiCad file ({f.get('original_file', '')}):\n{kicad_text[:8000]}"),
             "completion": readme_text[:8000],
             "source": record.get("source_url"),
             "task_type": "kicad_to_description",
         })
         # Обратное направление: описание → KiCad
         pairs.append({
-            "prompt": (
-                "Сгенерируй KiCad-описание схемы (.kicad_sch) по следующему текстовому "
-                "описанию проекта:\n\n{desc}"
-            ).format(desc=readme_text[:4000]),
+            "prompt": get_prompt("description_to_kicad", desc=readme_text[:4000]),
             "completion": kicad_text[:8000],
             "source": record.get("source_url"),
             "task_type": "description_to_kicad",
@@ -83,50 +117,100 @@ def extract_kicad_pairs(record: dict) -> list[dict]:
 
 
 def extract_qa_pairs(record: dict) -> list[dict]:
-    """Пара (prompt=вопрос, completion=принятый ответ) из StackExchange."""
+    """Пара (вопрос → лучший ответ) из StackExchange-записи.
+
+    Маркеры заголовков поддерживаются и русские, и английские (I14): раньше
+    разбор зависел от строк «## Вопрос»/«[ПРИНЯТ]», и англоязычная ветка
+    давала 0 пар — молча.
+    """
     if record.get("source_type") != "stackexchange":
         return []
     meta = record.get("metadata") or {}
     answers = meta.get("answers") or []
     accepted = [a for a in answers if a.get("is_accepted")]
     if not accepted:
-        # Берём ответ с наибольшим score
         accepted = sorted(answers, key=lambda a: a.get("score", 0), reverse=True)[:1]
     if not accepted:
         return []
 
-    # content уже содержит структуру "# Title\n## Вопрос\n...\n## Ответ..."
     content = record.get("content") or ""
-    # Простое разбиение
-    parts = content.split("## Вопрос")
-    if len(parts) < 2:
+    q_marker = _find_marker(content, Q_MARKERS)
+    a_marker = _find_marker(content, A_MARKERS)
+    if not q_marker or not a_marker:
         return []
-    question_body = parts[1].split("## Ответ")[0].strip()
-    answer_section = "## Ответ".join(content.split("## Ответ")[1:])
-    # Найти тело принятого ответа — упрощённо: первое тело после [ПРИНЯТ]
-    accepted_blocks = answer_section.split("[ПРИНЯТ]")
-    if len(accepted_blocks) < 2:
+
+    after_q = content.split(q_marker, 1)[1]
+    question_body = re.split(r"\n" + re.escape(a_marker), after_q)[0].strip()
+    answer_section = after_q.split(a_marker, 1)[1] if a_marker in after_q else ""
+    blocks = [b for b in answer_section.split(a_marker) if b.strip()]
+    if not question_body or not blocks:
         return []
-    answer_body = accepted_blocks[1].split("## Ответ")[0].strip()
-    # Убираем маркер
-    answer_body = answer_body.lstrip(" ").rstrip()
-    if not answer_body:
+
+    # тело принятого ответа: блок с маркером «принят», иначе первый (краулер
+    # сортирует ответы: принятый → по score)
+    body = ""
+    for b in blocks:
+        head = b[:120]
+        if any(mk in head for mk in ACCEPTED_MARKERS) or \
+           (accepted[0].get("answer_id") is not None
+            and str(accepted[0]["answer_id"]) in head):
+            body = b
+            break
+    body = _strip_answer_header(body or blocks[0])
+    if not body:
         return []
 
     title = meta.get("title") or ""
+    prefix = "Вопрос" if _is_russian(question_body) else "Question"
+    prompt = f"{prefix}: {title}\n\n{question_body}" if title else f"{prefix}: {question_body}"
 
     return [{
-        "prompt": f"Вопрос: {title}\n\n{question_body}",
-        "completion": answer_body,
-        "source": record.get("source_url"),
+        "prompt": prompt,
+        "completion": body,
+        "source": record.get("source_url") or "",
         "task_type": "qa_stackexchange",
         "tags": meta.get("tags") or [],
     }]
 
 
-# ============================================================
-# Новые типы пар (Этап 9)
-# ============================================================
+def _accepted_from_metadata(answers: list[dict]) -> str:
+    """Тело принятого ответа из metadata.answers (если краулер его сохранил)."""
+    best = None
+    for a in answers:
+        if isinstance(a, dict) and a.get("is_accepted") and a.get("body"):
+            return a["body"].strip()
+    # принятого нет — берём самый рейтинговый с телом
+    with_body = [a for a in answers if isinstance(a, dict) and a.get("body")]
+    if with_body:
+        best = max(with_body, key=lambda a: a.get("score", 0) or 0)
+        return best["body"].strip()
+    return ""
+
+
+def _pick_answer_block(blocks: list[str], accepted: dict | None) -> str:
+    """Выбрать блок ответа по маркеру «принят» или по id (fallback-разбор)."""
+    for b in blocks:
+        head = b[:160]
+        if any(mk in head for mk in ACCEPTED_MARKERS):
+            return _strip_answer_header(b)
+    if accepted and accepted.get("answer_id") is not None:
+        aid = str(accepted["answer_id"])
+        for b in blocks:
+            if aid in b.splitlines()[0]:
+                return _strip_answer_header(b)
+    return _strip_answer_header(blocks[0]) if blocks else ""
+
+
+def _strip_answer_header(block: str) -> str:
+    """Из блока «(score=12) [ПРИНЯТ]\n\n<тело>» оставить <тело>."""
+    lines = block.strip().splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and ("score=" in lines[0].lower()
+                  or any(mk in lines[0] for mk in ACCEPTED_MARKERS)):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
 
 def extract_datasheet_pairs(record: dict) -> list[dict]:
     """Пара (описание компонента → параметры) из PDF datasheet.
@@ -169,15 +253,11 @@ def extract_datasheet_pairs(record: dict) -> list[dict]:
         tables_section = content.split("EXTRACTED TABLES")[-1]
         if tables_section:
             pairs.append({
-                "prompt": (
-                    "Опиши ключевые электрические характеристики компонента из datasheet. "
-                    "Сформируй структурированный ответ с указанием pinout, диапазонов напряжений "
-                    "и особенностей."
-                    + (f"\n\nТип компонента: {component_type}" if component_type else "")
-                ),
+                "prompt": get_prompt("datasheet_specs",
+                                     component=component_type or "unknown"),
                 "completion": tables_section[:8000],
                 "source": record.get("source_url"),
-                "task_type": "datasheet_to_specs",
+                "task_type": "datasheet_specs",
                 "component_type": component_type,
             })
 
@@ -188,11 +268,8 @@ def extract_datasheet_pairs(record: dict) -> list[dict]:
             for e in toc[:50]
         )
         pairs.append({
-            "prompt": (
-                "Сформируй структуру документации для электронного компонента. "
-                "Перечисли основные разделы datasheet'а."
-                + (f"\n\nТип компонента: {component_type}" if component_type else "")
-            ),
+            "prompt": get_prompt("datasheet_structure",
+                                 component=component_type or "unknown"),
             "completion": toc_text,
             "source": record.get("source_url"),
             "task_type": "datasheet_structure",
@@ -226,19 +303,19 @@ def extract_summary_pairs(record: dict) -> list[dict]:
         summary = summary[:1000] + "..."
 
     pairs = [{
-        "prompt": "Сформируй краткое резюме статьи для технического блога.",
+        "prompt": get_prompt("article_summary", content=content[:8000]),
         "completion": summary,
         "source": record.get("source_url"),
-        "task_type": "article_to_summary",
+        "task_type": "article_summary",
     }]
 
     # Обратная пара: summary → полный текст (для генерации)
     if len(content) > 5000:
         pairs.append({
-            "prompt": f"На основе этого краткого описания, разверни полный технический текст:\n\n{summary}",
+            "prompt": get_prompt("article_expansion", summary=summary),
             "completion": content[:8000],
             "source": record.get("source_url"),
-            "task_type": "summary_to_article",
+            "task_type": "article_expansion",
         })
 
     return pairs
@@ -267,25 +344,26 @@ def extract_code_explanation_pairs(record: dict) -> list[dict]:
         if len(code) < 50:
             continue
 
-        # Берём контекст: 200 символов до и после блока
-        start = max(0, m.start() - 300)
-        end = min(len(content), m.end() + 200)
-        before = content[start:m.start()].strip()
-        after = content[m.end():end].strip()
-        context = (before + "\n" + after).strip()
-
-        if len(context) < 100:
+        # Объяснение = текст до блока (он обычно и описывает код); после блока
+        # чаще всего идёт следующий пример, поэтому «before» приоритетнее.
+        before = content[max(0, m.start() - 1200):m.start()].strip()
+        after = content[m.end():m.end() + 600].strip()
+        explanation = before if len(before) >= 100 else after
+        # заголовок секции, если он рядом — полезный контекст
+        if len(explanation) < 100:
+            continue
+        explanation = re.split(r"```", explanation)[0].strip()
+        if len(explanation) < 100:
             continue
 
+        prompt = get_prompt("code_explanation", code=code[:3000], lang=language)
+        if not prompt:
+            continue
         pairs.append({
-            "prompt": (
-                f"Опиши, что делает этот код, и объясни его назначение.\n\n"
-                f"Контекст из статьи:\n{context[:1500]}\n\n"
-                f"Код ({language}):\n```\n{code[:3000]}\n```"
-            ),
-            "completion": f"Этот код написан на {language}. Контекст: {context[:500]}",
+            "prompt": prompt,
+            "completion": explanation[:4000],
             "source": record.get("source_url"),
-            "task_type": "code_to_explanation",
+            "task_type": "code_explanation",
             "language": language,
         })
 
@@ -296,11 +374,9 @@ def extract_code_explanation_pairs(record: dict) -> list[dict]:
 def extract_faq_pairs(record: dict) -> list[dict]:
     """Пара (вопрос → ответ) из FAQ-секций статей и учебников.
 
-    Ищет в content секции с заголовками FAQ, Questions, Часто задаваемые вопросы
-    и парсит пары Q: ... A: ...
+    Ищет в content секции с заголовками FAQ/Questions/«Часто задаваемые вопросы»
+    и парсит пары Q:/A:, Question:/Answer:, В:/О:, Вопрос:/Ответ: (I14).
     """
-    import re
-
     content = record.get("content") or ""
     if not content:
         return []
@@ -316,10 +392,11 @@ def extract_faq_pairs(record: dict) -> list[dict]:
         for m in re.finditer(pattern, content, re.IGNORECASE):
             # Берём 5000 символов после заголовка FAQ
             faq_section = content[m.end():m.end() + 5000]
-            # Ищем пары Q: ... A: ... или **Q:** ... **A:** ...
+            # Пары вида «Q: … / A: …», «**Question:** …», «Вопрос: … / Ответ: …»
             q_a_re = re.compile(
-                r"(?:\*\*)?Q(?:uestion)?:?\s*\*{0,2}(.*?)(?:\n\s*\n)"
-                r"(?:\*\*)?A(?:nswer)?:?\s*\*{0,2}(.*?)(?=\n\s*\n|\nQ|\Z)",
+                r"(?:\*\*)?(?:Q(?:uestion)?|В(?:опрос)?)[.:)]*\s*\*{0,2}(.*?)\s*(?:\n\s*\n)"
+                r"(?:\*\*)?(?:A(?:nswer)?|О(?:твет)?)[.:)]*\s*\*{0,2}(.*?)"
+                r"(?=\n\s*\n|\n\s*(?:\*\*)?(?:Q|В)(?:uestion|опрос)?[.:)]|\Z)",
                 re.DOTALL | re.IGNORECASE,
             )
             for qm in q_a_re.finditer(faq_section):

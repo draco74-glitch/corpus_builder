@@ -26,8 +26,15 @@ def _optimize_sqlite_cache(cache_path: Path) -> None:
         log.warning(f"Failed to optimize SQLite cache: {e}")
 
 
-def make_cached_session(config: AppConfig, ttl_hours: int = 24 * 7, use_cache: bool = True):
-    from .robots import make_session
+def make_cached_session(config: AppConfig, ttl_hours: float = 24 * 7, use_cache: bool = True):
+    """Сессия с HTTP-кэшем (SQLite, WAL) либо обычная pooled-сессия.
+
+    Кэш даёт повторный запуск без перевыкачки и, что важнее для вежливости,
+    снижает нагрузку на источник. Ограничение: тело ответа кэшируется целиком,
+    поэтому очень большие PDF/архивы раздувают SQLite — при работе с гигабайтами
+    отключайте кэш (`output.use_http_cache: false`).
+    """
+    from .robots import make_retry_adapter, make_session
 
     if not use_cache:
         return make_session(config)
@@ -50,6 +57,11 @@ def make_cached_session(config: AppConfig, ttl_hours: int = 24 * 7, use_cache: b
         stale_if_error=True,
         cache_control=True,
     )
+    # Повторы по 429/5xx и пул соединений — как у make_session; без этого
+    # кэшированная сессия была «моложе» обычной (I2).
+    adapter = make_retry_adapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
     session.headers.update({
         "User-Agent": config.output.user_agent,
         "Accept": "*/*",

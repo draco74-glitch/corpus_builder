@@ -11,15 +11,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
-    QListWidgetItem, QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QCheckBox, QGroupBox,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
 )
 
-from .logging_setup import get_logger
 from .gui_improvements import tr
+from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
@@ -200,8 +211,7 @@ class MergeConfigDialog(QDialog):
             return
 
         try:
-            from .config_generator import merge_sources_with_stats, build_config
-            import yaml
+            from .config_generator import merge_sources_with_stats
 
             sources, stats = merge_sources_with_stats(self._files)
             self._merged_sources = sources

@@ -1,0 +1,225 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      USER-AGENT:
+      - CorpusBuilder-Test
+    method: GET
+    uri: https://doaj.org/api/search/articles/electronics?page=1&pageSize=5
+  response:
+    body:
+      string: '{"total": 504921, "page": 1, "pageSize": 5, "timestamp": "2026-08-30T12:40:22.223448Z",
+        "query": "electronics", "results": [{"last_updated": "2025-11-04T07:42:19Z",
+        "bibjson": {"identifier": [{"id": "1516-1439", "type": "pissn"}, {"id": "10.1590/1980-5373-mr-2025-0388",
+        "type": "doi"}], "journal": {"volume": "28", "country": "BR", "issns": ["1516-1439"],
+        "publisher": "Associa\u00e7\u00e3o Brasileira de Metalurgia e Materiais (ABM);
+        Associa\u00e7\u00e3o Brasileira de Cer\u00e2mica (ABC); Associa\u00e7\u00e3o
+        Brasileira de Pol\u00edmeros (ABPol)", "language": ["EN"], "title": "Materials
+        Research"}, "month": "11", "keywords": ["AZ91D Mg alloy", "RSM", "GA", "Elevated
+        temperature and tribology"], "year": "2025", "subject": [{"code": "TA401-492",
+        "scheme": "LCC", "term": "Materials of engineering and construction. Mechanics
+        of materials"}], "author": [{"orcid_id": "https://orcid.org/0009-0009-5705-9365",
+        "affiliation": "", "name": "Beniyel Muthuraj"}, {"orcid_id": "https://orcid.org/0000-0002-9498-5239",
+        "affiliation": "", "name": "Sivapragash Murugesan"}, {"orcid_id": "https://orcid.org/0000-0002-6225-8037",
+        "affiliation": "", "name": "Rajesh Rajamony"}, {"orcid_id": "https://orcid.org/0000-0001-9984-522X",
+        "affiliation": "", "name": "Michael Thomas Rex Francis"}], "link": [{"content_type":
+        "text/html", "type": "fulltext", "url": "http://www.scielo.br/scielo.php?script=sci_arttext&pid=S1516-14392025000100292&lng=en&tlng=en"},
+        {"content_type": "application/pdf", "type": "fulltext", "url": "http://www.scielo.br/pdf/mr/v28/1516-1439-mr-28-e20250388.pdf"}],
+        "abstract": "This study uses an artificial neural network (ANN) model to predict
+        the wear rate and friction coefficient of the magnesium alloy AZ91D, based
+        on experimental data from a pin-on-disc tribometer. The model includes three
+        essential process parameters: sliding velocity (m/s), applied load (kg), and
+        sliding distance (km), in addition to the chamber temperature (\u00b0C). A
+        total of 27 experimental designs were devised using a Box-Behnken design.
+        The ANN model was trained utilizing the Bayesian regularization approach with
+        one hidden layer of 10 neurons. The developed ANN models for predicting wear
+        rate and coefficient of friction were used as goal functions in a multi-objective
+        Pareto-based genetic algorithm to maximize tribological performance. The ideal
+        solution indicates a sliding velocity of 2 m/s, a load of 5 kg, a sliding
+        distance of 1.5 km, and a chamber temperature of 143\u00b0C, yielding a minimal
+        wear rate of 1.7891 mm3/kg\u00b7km and a coefficient of friction of 0.1435.
+        Energy Dispersive Spectroscopy and Scanning Electron Microscopy analyses of
+        worn surfaces show that the wear rate decreases with increasing load and sliding
+        velocity at higher temperatures. The oxide layer that forms at high temperatures
+        enhances wear resistance, even under high loads and sliding speeds.", "title":
+        "Bayesian ANN-Based Prediction and Multi-Objective Optimization of Tribological
+        Behavior in Magnesium Alloy AZ91D at Elevated Temperature Using Pareto GA"},
+        "created_date": "2025-11-04T07:42:19Z", "id": "00000691d09c43d89e1475e3a84b986b"},
+        {"last_updated": "2025-08-19T18:23:36Z", "bibjson": {"identifier": [{"id":
+        "2169-3536", "type": "eissn"}, {"id": "10.1109/ACCESS.2019.2953302", "type":
+        "doi"}], "journal": {"volume": "7", "country": "US", "issns": ["2169-3536"],
+        "publisher": "IEEE", "language": ["EN"], "title": "IEEE Access"}, "end_page":
+        "169122", "keywords": ["Lower limb exoskeleton", "system design", "human motion
+        intention", "hybrid dual-mode control", "tracking performance", "power-assisted
+        effect"], "year": "2019", "start_page": "169107", "subject": [{"code": "TK1-9971",
+        "scheme": "LCC", "term": "Electrical engineering. Electronics. Nuclear engineering"}],
+        "author": [{"orcid_id": "https://orcid.org/0000-0002-1466-9050", "affiliation":
+        "State Key Laboratory of Robotics and System, Harbin Institute of Technology
+        (HIT), Harbin, China", "name": "Chao-Feng Chen"}, {"orcid_id": "https://orcid.org/0000-0003-3044-9733",
+        "affiliation": "State Key Laboratory of Robotics and System, Harbin Institute
+        of Technology (HIT), Harbin, China", "name": "Zhi-Jiang Du"}, {"orcid_id":
+        "https://orcid.org/0000-0001-7582-3501", "affiliation": "China South Industries
+        Group Corporation, Weapon Equipment Research Institute, Beijing, China", "name":
+        "Long He"}, {"orcid_id": "https://orcid.org/0000-0001-8597-1153", "affiliation":
+        "State Key Laboratory of Robotics and System, Harbin Institute of Technology
+        (HIT), Harbin, China", "name": "Yong-Jun Shi"}, {"orcid_id": "https://orcid.org/0000-0003-4084-135X",
+        "affiliation": "China South Industries Group Corporation, Weapon Equipment
+        Research Institute, Beijing, China", "name": "Jia-Qi Wang"}, {"orcid_id":
+        "https://orcid.org/0000-0002-1960-5312", "affiliation": "China South Industries
+        Group Corporation, Weapon Equipment Research Institute, Beijing, China", "name":
+        "Guo-Qiang Xu"}, {"orcid_id": "https://orcid.org/0000-0002-4387-1354", "affiliation":
+        "China South Industries Group Corporation, Weapon Equipment Research Institute,
+        Beijing, China", "name": "Yu Zhang"}, {"orcid_id": "https://orcid.org/0000-0002-0291-5453",
+        "affiliation": "State Key Laboratory of Robotics and System, Harbin Institute
+        of Technology (HIT), Harbin, China", "name": "Dong-Mei Wu"}, {"orcid_id":
+        "https://orcid.org/0000-0002-1211-6444", "affiliation": "State Key Laboratory
+        of Robotics and System, Harbin Institute of Technology (HIT), Harbin, China",
+        "name": "Wei Dong"}], "link": [{"type": "fulltext", "url": "https://ieeexplore.ieee.org/document/8897544/"}],
+        "abstract": "This paper describes a system design and hybrid control algorithm
+        of an electrically actuated lower limb exoskeleton (LLE). The system design
+        mainly includes three parts: mechanical structure design, actuation system
+        design and sensor system design. According to the initial state of the joint
+        angle, LLE can be divided into Non-anthropomorphic state (NAS) and anthropomorphic
+        state (AS). The human motion intention (HMI) estimation can be divided into
+        gait phase classification and reference trajectory estimation. The fuzzy logic
+        is used to detect different phases in the gait phase classification. In the
+        reference trajectory estimation, the kinematic model of the LLE is utilized
+        to obtain a continuous joint trajectory, which is used as input of the control
+        law. To make the LLE accurately follow the movement of people and remain stable,
+        a hybrid dual-mode control strategy is proposed in this paper, i.e., the adaptive
+        impedance control (AIC) method is used to improve the stability and resistance
+        to shock in stance phase, and the active disturbance rejection control with
+        the fast terminal sliding mode control (ADRC-FTSMC) method is employed to
+        improve the response speed and the tracking precision in swing phase. Furthermore,
+        in order to solve the torque discontinuity in the switching process, a smoothing
+        method is proposed during the transition. Finally, the prototype experiments
+        were set up to verify the tracking performance and power-assisted effect of
+        the proposed exoskeleton. The experiments results show the LLE can achieve
+        excellent tracking performance and power-assisted effect based on the proposed
+        HMI methodology and hybrid dual-mode control strategy.", "title": "Development
+        and Hybrid Control of an Electrically Actuated Lower Limb Exoskeleton for
+        Motion Assistance"}, "id": "00001267b59f4e5a9376d761e30da899", "created_date":
+        "2021-03-30T01:58:36Z"}, {"last_updated": "2025-08-19T19:55:23Z", "bibjson":
+        {"identifier": [{"id": "1751-8733", "type": "eissn"}, {"id": "1751-8725",
+        "type": "pissn"}, {"id": "10.1049/mia2.12215", "type": "doi"}], "journal":
+        {"volume": "16", "number": "1", "country": "GB", "issns": ["1751-8725", "1751-8733"],
+        "publisher": "Wiley", "language": ["EN"], "title": "IET Microwaves, Antennas
+        & Propagation"}, "month": "01", "end_page": "28", "keywords": ["directional
+        couplers", "power dividers"], "year": "2022", "start_page": "18", "subject":
+        [{"code": "TK5101-6720", "scheme": "LCC", "term": "Telecommunication"}, {"code":
+        "QC501-766", "scheme": "LCC", "term": "Electricity and magnetism"}], "author":
+        [{"affiliation": "The School of Electronic Science & Engineering Nanjing University
+        of Posts and Telecommunications Nanjing China", "name": "Xiaojun Hu"}, {"affiliation":
+        "The School of Electronic Science & Engineering Nanjing University of Posts
+        and Telecommunications Nanjing China", "name": "Feng Xu"}], "link": [{"content_type":
+        "HTML", "type": "fulltext", "url": "https://doi.org/10.1049/mia2.12215"}],
+        "abstract": "Abstract In this study, a novel coupling structure based on half\u2010mode
+        substrate\u2010integrated waveguide (HMSIW) is proposed with a small size
+        and broad bandwidth. The HMSIW coupler is realised by connecting their equivalent
+        magnetic walls with metal strips, which avoids exposing the semi\u2010enclosed
+        magnetic walls outside. Hence, it has greater anti\u2010interference capability
+        than the existing HMSIW couplers. The directional coupling principle is introduced
+        by analysing the proposed single connecting strip coupler. In order to lower
+        return loss and higher isolation, a 3\u00a0dB directional coupler working
+        from 10.8 to 16.8\u00a0GHz is designed with two connecting strips. Finally,
+        a six\u2010port circuit is achieved by utilising this compact 3\u00a0dB directional
+        coupler. Furthermore, a broadband HMSIW power divider is optimised to satisfy
+        the performance of this six\u2010port circuit. The proposed coupler with metal
+        strips helps to increase bandwidth and reduce size, which makes it more applicable
+        to demanding systems with complex requirements such as detecting and transceiver
+        systems. The 3\u00a0dB coupler and six\u2010port circuit are fabricated and
+        measured. The measured results are in accordance with the simulated data.",
+        "title": "A six\u2010port network based on substrate integrated waveguide
+        coupler with metal strips"}, "id": "00005d71bbd540f8a3720414757f656e", "created_date":
+        "2021-12-23T11:57:34Z"}, {"last_updated": "2025-08-20T01:10:08Z", "bibjson":
+        {"identifier": [{"id": "2169-3536", "type": "eissn"}, {"id": "10.1109/ACCESS.2023.3325252",
+        "type": "doi"}], "journal": {"volume": "11", "country": "US", "issns": ["2169-3536"],
+        "publisher": "IEEE", "language": ["EN"], "title": "IEEE Access"}, "end_page":
+        "115414", "keywords": ["Interference sensing", "duration units of frequency
+        points", "LFM interference"], "year": "2023", "start_page": "115403", "subject":
+        [{"code": "TK1-9971", "scheme": "LCC", "term": "Electrical engineering. Electronics.
+        Nuclear engineering"}], "author": [{"orcid_id": "https://orcid.org/0000-0003-0558-444X",
+        "affiliation": "School of Information and Electronics, Beijing Institute of
+        Technology, Beijing, China", "name": "Duo Wang"}, {"orcid_id": "https://orcid.org/0000-0002-3048-9949",
+        "affiliation": "School of Information and Electronics, Beijing Institute of
+        Technology, Beijing, China", "name": "Ju Wang"}, {"orcid_id": "https://orcid.org/0000-0002-9309-3407",
+        "affiliation": "School of Information and Electronics, Beijing Institute of
+        Technology, Beijing, China", "name": "Yi Zhong"}], "link": [{"type": "fulltext",
+        "url": "https://ieeexplore.ieee.org/document/10286823/"}], "abstract": "The
+        adaptive Frequency-Hopping(FH) technique based on interference sensing can
+        further enhance the anti-interference performance of hybrid Direct-Sequence/FH
+        Spread Spectrum(DS/FH SS) system and FH Orthogonal Frequency Division Multiplexing(FH-OFDM)
+        system. Existing interference sensing algorithms cannot provide an accurate
+        detection performance for both stationary and non-stationary LFM interference,
+        and have the problem of misjudging useful signal as interference due to the
+        dynamic time-frequency characteristics of useful signal. To improve the sensing
+        detection capability with low false alarm rate, this paper proposes an algorithm,
+        by analyzing the duration units of frequency points and combining the least-squares
+        fitting method to sense stationary and non-stationary LFM interference. Simulations
+        have been carried out to demonstrate the effectiveness of our interference
+        sensing algorithm.", "title": "An Interference Sensing Algorithm Based on
+        Duration Units of Frequency Points for Adaptive Frequency-Hopping System"},
+        "id": "00005dbec6c041ef81392cb7e456d597", "created_date": "2023-10-25T23:01:11Z"},
+        {"last_updated": "2025-10-31T10:33:17Z", "bibjson": {"identifier": [{"id":
+        "2312-4121", "type": "pissn"}, {"id": "2411-2976", "type": "eissn"}, {"id":
+        "10.20535/2411-2976.12014.62-65", "type": "doi"}], "journal": {"number": "1",
+        "country": "UA", "issns": ["2312-4121", "2411-2976"], "publisher": "National
+        Technical University of Ukraine \u201cIgor Sikorsky Kyiv Polytechnic Institute\u201d",
+        "language": ["EN", "UK"], "title": "Information and Telecommunication Sciences"},
+        "month": "10", "end_page": "65", "year": "2014", "start_page": "62", "subject":
+        [{"code": "TK5101-6720", "scheme": "LCC", "term": "Telecommunication"}], "author":
+        [{"orcid_id": "https://orcid.org/0000-0002-4073-9681", "affiliation": "National
+        Technical University of Ukraine \"KPI\"", "name": "Leonid O. Uryvsky"}, {"orcid_id":
+        "https://orcid.org/0000-0002-6582-9421", "affiliation": "National Technical
+        University of Ukraine \"KPI\"", "name": "Alina V. Moshinskaya"}], "link":
+        [{"content_type": "html", "type": "fulltext", "url": "https://infotelesc.kpi.ua/article/view/28869"}],
+        "abstract": "The method for assessing a channel capacity and productivity
+        of fiber-optic communication line (FOCL) based on the DWDM (Dense Wavelength
+        Division Multiplexing) technology is proposed. The interrelation between noise-immunity
+        factors and information characteristics of FOCL is highlighted.", "title":
+        "THE METHODOLOGY OF INFORMATION CAPABILITIES ESTIMATION FOR FIBER-OPTICS COMMUNICATION"},
+        "id": "00006680efb342a38795c22a4e5710d1", "created_date": "2025-10-31T10:33:17Z"}],
+        "next": "https://doaj.org/api/v4/search/articles/electronics?page=2&pageSize=5",
+        "last": "https://doaj.org/api/v4/search/articles/electronics?page=100985&pageSize=5"}'
+    headers:
+      CF-RAY:
+      - a333dd11bdeb5cd9-SIN
+      Connection:
+      - keep-alive
+      Content-Encoding:
+      - gzip
+      Content-Type:
+      - application/json
+      Date:
+      - Sun, 30 Aug 2026 12:40:22 GMT
+      Nel:
+      - '{"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}'
+      Report-To:
+      - '{"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=59KPq%2BRGmcibwWIi%2F7BAXShX0Ym2RvlYdjU5UyCHrRn2X%2FqLU11wuj1m5LYp64tnnI4FPu5RU767ntYJlmKxWlFqe4PkOsiOGgzzUds6NGv2AYBOa7PgOS26"}]}'
+      Server:
+      - cloudflare
+      Transfer-Encoding:
+      - chunked
+      access-control-allow-origin:
+      - '*'
+      cf-cache-status:
+      - DYNAMIC
+      link:
+      - <https://doaj.org/api/v4/search/articles/electronics?page=2&pageSize=5>; rel=next,
+        <https://doaj.org/api/v4/search/articles/electronics?page=100985&pageSize=5>;
+        rel=last
+      vary:
+      - Accept-Encoding
+      - Cookie
+      x-total-count:
+      - '504921'
+    status:
+      code: 200
+      message: OK
+version: 1

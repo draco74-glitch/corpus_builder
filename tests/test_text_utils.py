@@ -1,5 +1,4 @@
 """Тесты на text_utils."""
-import pytest
 
 from corpus_builder.text_utils import (
     canonical_url,

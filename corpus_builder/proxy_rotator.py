@@ -14,6 +14,8 @@ import itertools
 import random
 from typing import Any
 
+import requests
+
 from .logging_setup import get_logger
 from .models import AppConfig
 
@@ -113,34 +115,62 @@ def make_session_with_proxy(
 ) -> Any:
     """Создать requests.Session с browser-like заголовками и опциональным прокси.
 
-    Возвращает tuple (session, rotator). rotator может быть None, если прокси не заданы.
+    Возвращает tuple (session, rotator). rotator == None, если прокси не заданы.
     """
     from .robots import make_session
     session = make_session(config)
 
     if use_browser_headers:
         headers = get_browser_headers()
-        # Сохраняем кастомный User-Agent из конфига, если задан явно
-        if config.output.user_agent and "CorpusBuilder" in config.output.user_agent:
-            # Если это дефолтный UA — заменяем на браузерный
-            pass
-        else:
+        # Пользовательский UA из конфига уважаем ВСЕГДА: раньше ветка `if ...: pass`
+        # ничего не делала, и браузерный UA перезаписывал настроенный; при
+        # кастомном UA — наоборот, терялись Sec-Fetch-* заголовки (I4).
+        if config.output.user_agent:
             headers["User-Agent"] = config.output.user_agent
         session.headers.update(headers)
 
     rotator = None
     if use_proxy:
-        # Читаем прокси из переменной окружения или конфига
-        # (пока конфиг не имеет поля network — добавим позже)
+        # Прокси приходят из AppSettings.setup_env_vars() -> CORPUS_BUILDER_PROXIES
         proxy_env = os.environ.get("CORPUS_BUILDER_PROXIES", "")
-        if proxy_env:
-            proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        if proxies:
             rotator = ProxyRotator(proxies)
             log.info(f"Proxy rotator initialized with {len(proxies)} proxies")
-        else:
-            rotator = ProxyRotator([])
+            session = RotatingProxySession(session, rotator)
 
     return session, rotator
+
+
+class RotatingProxySession(requests.Session):
+    """Сессия, выбирающая прокси на КАЖДЫЙ запрос (I4: ротация была декоративной).
+
+    Один `session.proxies` на всё время жизни сессии использует только первый
+    прокси; здесь `prepare_request` назначает `req.proxies` из ротатора, а при
+    сбое прокси помечается «плохим» и запрос повторяется напрямую.
+    """
+
+    def __init__(self, base: requests.Session, rotator: ProxyRotator):
+        self.__dict__.update(base.__dict__)
+        self._rotator = rotator
+
+    def prepare_request(self, request):
+        prepared = super().prepare_request(request)
+        proxy = self._rotator.next_proxy()
+        if proxy:
+            prepared.proxies = {"http": proxy, "https": proxy}
+        return prepared
+
+    def send(self, request, **kwargs):
+        try:
+            return super().send(request, **kwargs)
+        except (requests.exceptions.ProxyError, requests.exceptions.SSLError) as e:
+            used = dict(getattr(request, "proxies", None) or {})
+            if used.get("https") or used.get("http"):
+                self._rotator.mark_bad(used.get("https") or used.get("http"))
+            log.debug(f"proxy failed ({e}); retrying directly")
+            kwargs["proxies"] = {}
+            return super().send(request, **kwargs)
 
 
 import os  # нужен для os.environ в make_session_with_proxy

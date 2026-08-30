@@ -10,16 +10,15 @@
 from __future__ import annotations
 
 import fnmatch
-import io
+import hashlib
 import os
+import tempfile
 import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
-
 from ..logging_setup import get_logger
-from ..models import AppConfig, CorpusRecord, DownloadedFile
+from ..models import CorpusRecord, DownloadedFile
 from .base import BaseCrawler
 
 log = get_logger(__name__)
@@ -49,97 +48,32 @@ class GitHubCrawler(BaseCrawler):
                 log.warning(f"Cannot get default branch for {owner}/{repo}: {e}, fallback 'main'")
                 branch = "main"
 
-        # 2. Скачать ZIP-архив выбранной ветки
-        zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
-        try:
-            r = self.session.get(zip_url, timeout=120, headers=headers, stream=True)
-            if r.status_code == 404:
-                # Попробовать master
-                zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
-                r = self.session.get(zip_url, timeout=120, headers=headers, stream=True)
-            r.raise_for_status()
-        except Exception as e:
-            log.warning(f"Failed to download {owner}/{repo} archive: {e}")
+        # 2. Скачать ZIP-архив выбранной ветки (на диск, не в память — I9:
+        #    ранние версии держали в RAM два полных архива репозитория)
+        zip_path = self._download_archive(owner, repo, branch, headers)
+        if zip_path is None:
             return None
 
-        # 3. Распаковать в памяти, безопасно выбрать файлы
+        # 3. Прочитать архив, безопасно выбрать файлы
         content_parts: list[str] = []
         downloaded: list[DownloadedFile] = []
         project_tree: list[str] = []
         lfs_files: list[str] = []
 
         try:
-            zf = zipfile.ZipFile(io.BytesIO(r.content))
+            zf = zipfile.ZipFile(zip_path)
         except zipfile.BadZipFile as e:
             log.warning(f"Bad ZIP for {owner}/{repo}: {e}")
+            zip_path.unlink(missing_ok=True)
             return None
 
-        # Корень архива: обычно "{repo}-{hash}/"
-        names = zf.namelist()
-        if not names:
-            return None
-        root_prefix = names[0].split("/", 1)[0]
-
-        for name in names:
-            if name.endswith("/"):
-                continue
-            # rel_path без корневого префикса
-            if not name.startswith(root_prefix + "/"):
-                continue
-            rel_path = name[len(root_prefix) + 1 :]
-            project_tree.append(rel_path)
-
-            # Фильтр по include_files
-            include_patterns = cfg.include_files
-            matched = any(
-                fnmatch.fnmatch(rel_path.lower(), p.lower()) for p in include_patterns
+        try:
+            docs_texts, included_rel_paths = self._collect_content(
+                zf, owner, repo, content_parts, downloaded, project_tree, lfs_files,
             )
-            if not matched:
-                continue
-
-            try:
-                raw = zf.read(name)
-            except Exception as e:
-                log.debug(f"Cannot read {name} from {owner}/{repo}: {e}")
-                continue
-
-            # Проверка LFS-указателя
-            if raw.startswith(b"version https://git-lfs"):
-                lfs_files.append(rel_path)
-                # Не пытаемся декодировать как текст — это указатель
-                continue
-
-            # Сохраняем бинарник (KiCad/CSV) как файл
-            if any(
-                ext in rel_path
-                for ext in [".kicad_sch", ".kicad_pcb", ".kicad_pro", ".dcm", ".lib"]
-            ):
-                dest_path = self._safe_save(rel_path, raw)
-                if dest_path:
-                    import hashlib
-                    sha = hashlib.sha1(raw).hexdigest()[:12]
-                    downloaded.append(DownloadedFile(
-                        type="kicad",
-                        original_file=rel_path,
-                        local_path=dest_path,
-                        sha1=sha,
-                        size_bytes=len(raw),
-                    ))
-                continue
-
-            # Текстовые файлы — добавляем в content
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                try:
-                    import charset_normalizer
-                    guess = charset_normalizer.detect(raw)
-                    enc = guess.get("encoding") or "utf-8"
-                    text = raw.decode(enc, errors="replace")
-                except Exception:
-                    text = raw.decode("utf-8", errors="replace")
-
-            content_parts.append(f"=== {rel_path} ===\n{text}")
+        finally:
+            zf.close()
+            zip_path.unlink(missing_ok=True)
 
         # === Расширенные опции (Этап 2) ===
         issues_count = 0
@@ -153,6 +87,7 @@ class GitHubCrawler(BaseCrawler):
                     owner, repo, headers,
                     state=cfg.crawl_issues_state,
                     max_issues=cfg.crawl_issues_max,
+                    comments_per_issue=cfg.issues_comments_max,
                 )
                 if issues_texts:
                     content_parts.append(f"\n\n=== ISSUES & PR ({issues_count} entries) ===")
@@ -161,27 +96,19 @@ class GitHubCrawler(BaseCrawler):
             except Exception as e:
                 log.debug(f"Issues fetch failed for {owner}/{repo}: {e}")
 
-        # Docs-директория — ищем в уже распакованном ZIP
-        if cfg.crawl_docs_dir:
-            try:
-                # Передаём ZipFile повторно: открываем ещё раз
-                with zipfile.ZipFile(io.BytesIO(r.content)) as zf_docs:
-                    docs_texts = self._collect_docs_from_zip(
-                        zf_docs, root_prefix, list(cfg.docs_extensions),
-                    )
-                    if docs_texts:
-                        docs_files_count = len(docs_texts)
-                        content_parts.append(f"\n\n=== DOCUMENTATION ({docs_files_count} files) ===")
-                        content_parts.extend(docs_texts)
-                        log.info(f"Found {docs_files_count} docs files in {owner}/{repo}")
-            except Exception as e:
-                log.debug(f"Docs collection failed for {owner}/{repo}: {e}")
+        # Docs-директория — из уже скачанного архива (сбор идёт тем же проходом)
+        if cfg.crawl_docs_dir and docs_texts:
+            docs_files_count = len(docs_texts)
+            content_parts.append(f"\n\n=== DOCUMENTATION ({docs_files_count} files) ===")
+            content_parts.extend(docs_texts)
+            log.info(f"Found {docs_files_count} docs files in {owner}/{repo}")
 
-        # Wiki — опционально
+        # Wiki — ОСТОРОЖНО: wiki lives в ОТДЕЛЬНОМ репозитории {repo}.wiki (I8)
         if cfg.crawl_wiki:
             try:
-                wiki_texts, wiki_files, wiki_ok = self._fetch_wiki(
+                wiki_texts, wiki_ok = self._fetch_wiki(
                     owner, repo, headers, list(cfg.docs_extensions),
+                    skip_paths=included_rel_paths,
                 )
                 if wiki_ok and wiki_texts:
                     wiki_crawled = True
@@ -210,6 +137,136 @@ class GitHubCrawler(BaseCrawler):
             license=self._fetch_license(owner, repo, headers),
         )
 
+    # ----------------------- archive -----------------------
+
+    def _download_archive(self, owner: str, repo: str, branch: str,
+                          headers: dict) -> Path | None:
+        """Скачать ZIP ветки на временный файл с лимитом по размеру (I9).
+
+        `stream=True` + `Content-Length` + счётчик по чанкам: раньше архив
+        целиком попадал в память дважды (основной проход и проход docs/).
+        """
+        cfg = self.config.crawlers.github
+        max_bytes = cfg.max_archive_mb * 1024 * 1024
+        candidates = [f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"]
+        if branch != "master":
+            candidates.append(f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip")
+        if branch != "main":
+            candidates.append(f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip")
+
+        last_error: str | None = None
+        for zip_url in candidates:
+            try:
+                r = self.session.get(zip_url, timeout=120, headers=headers, stream=True)
+                if r.status_code == 404:
+                    last_error = "404 (branch not found)"
+                    continue
+                r.raise_for_status()
+                declared = int(r.headers.get("Content-Length", 0) or 0)
+                if declared and declared > max_bytes:
+                    log.warning(f"Repo archive too large: {zip_url} "
+                                f"({declared / 1024 / 1024:.0f} MB > {cfg.max_archive_mb} MB)")
+                    r.close()
+                    return None
+                tmp = tempfile.NamedTemporaryFile(prefix="cb_repo_", suffix=".zip", delete=False)
+                written = 0
+                try:
+                    with tmp as f:
+                        for chunk in r.iter_content(65536):
+                            if not chunk:
+                                continue
+                            written += len(chunk)
+                            if written > max_bytes:
+                                log.warning(f"Repo archive exceeded {cfg.max_archive_mb} MB: {zip_url}")
+                                return None
+                            f.write(chunk)
+                except BaseException:
+                    Path(tmp.name).unlink(missing_ok=True)
+                    raise
+                return Path(tmp.name)
+            except Exception as e:
+                last_error = str(e)
+                log.debug(f"archive fetch failed {zip_url}: {e}")
+        log.warning(f"Failed to download {owner}/{repo} archive: {last_error}")
+        return None
+
+    def _collect_content(self, zf: zipfile.ZipFile, owner: str, repo: str,
+                         content_parts: list[str], downloaded: list[DownloadedFile],
+                         project_tree: list[str], lfs_files: list[str]
+                         ) -> tuple[list[str], set[str]]:
+        """Один проход по архиву.
+
+        Правила:
+          * файлы, подходящие под `include_files` (per-source важнее
+            глобального — I7), идут в `content_parts`;
+          * файлы из `docs|doc|documentation/` с разрешённым расширением идут
+            в отдельный блок DOCUMENTATION и НЕ дублируются в content (I8);
+          * LFS-указатели пропускаются целиком (это 130 байт вместо файла);
+          * KiCad-файлы сохраняются на диск как `downloaded_files`.
+
+        Возвращает (docs_texts, собранные_относительные_пути).
+        """
+        cfg = self.config.crawlers.github
+        include_patterns = self.include_files or cfg.include_files
+        docs_dirs = ("docs/", "doc/", "documentation/")
+        doc_exts = tuple(e.lower() if e.startswith(".") else f".{e.lower()}"
+                         for e in cfg.docs_extensions)
+
+        names = [n for n in zf.namelist() if not n.endswith("/")]
+        if not names:
+            return [], set()
+        root_prefix = names[0].split("/", 1)[0]
+
+        docs_texts: list[str] = []
+        included: set[str] = set()
+
+        for name in names:
+            if not name.startswith(root_prefix + "/"):
+                continue
+            rel_path = name[len(root_prefix) + 1:]
+            project_tree.append(rel_path)
+            lowered = rel_path.lower()
+
+            in_docs_dir = lowered.startswith(docs_dirs)
+            matched_include = any(fnmatch.fnmatch(lowered, p.lower())
+                                  for p in include_patterns)
+            matched_docs = in_docs_dir and lowered.endswith(doc_exts)
+            if not (matched_include or matched_docs):
+                continue
+
+            try:
+                raw = zf.read(name)
+            except Exception as e:
+                log.debug(f"Cannot read {name} from {owner}/{repo}: {e}")
+                continue
+
+            if raw.startswith(b"version https://git-lfs"):
+                lfs_files.append(rel_path)
+                continue
+
+            # KiCad/схемы сохраняем файлом (для пары README ↔ KiCad)
+            if self._is_kicad(rel_path):
+                dest_path = self._safe_save(rel_path, raw)
+                if dest_path:
+                    downloaded.append(DownloadedFile(
+                        type="kicad",
+                        original_file=rel_path,
+                        local_path=dest_path,
+                        sha1=hashlib.sha1(raw).hexdigest()[:12],
+                        size_bytes=len(raw),
+                    ))
+                included.add(rel_path)
+                continue
+
+            text = self._decode(raw)
+            included.add(rel_path)
+            if in_docs_dir:
+                docs_texts.append(f"=== {rel_path} ===\n{text}")
+            else:
+                content_parts.append(f"=== {rel_path} ===\n{text}")
+
+        return docs_texts, included
+
     # ----------------------- helpers -----------------------
 
     @staticmethod
@@ -232,29 +289,50 @@ class GitHubCrawler(BaseCrawler):
     def _fetch_issues(
         self, owner: str, repo: str, headers: dict,
         state: str = "all", max_issues: int = 50,
+        comments_per_issue: int = 20,
     ) -> tuple[list[str], int]:
-        """Извлечь обсуждения из Issues/PR через GitHub API.
+        """Извлечь обсуждения из Issues/PR через GitHub API (с пагинацией).
 
-        Возвращает (тексты для content_parts, количество найденных issues).
+        Возвращает (тексты для content_parts, количество собранных обсуждений).
+
+        Раньше бралась ровно ОДНА страница по `per_page=min(max_issues,100)`,
+        поэтому `crawl_issues_max: 500` молча давал 100 записей (I9). Теперь
+        страница за страницей до `max_issues`, и к каждому треду добавляются
+        комментарии (именно в них обычно и содержит объяснение).
         """
         api = f"https://api.github.com/repos/{owner}/{repo}/issues"
         params = {
             "state": state,
-            "per_page": min(max_issues, 100),
+            "per_page": min(max(1, max_issues), 100),
             "filter": "all",
             "sort": "updated",
             "direction": "desc",
         }
-        try:
-            r = self.session.get(api, params=params, headers=headers, timeout=20)
-            if r.status_code == 403:
-                log.warning(f"GitHub rate limit on /issues for {owner}/{repo}")
-                return [], 0
-            r.raise_for_status()
-            items = r.json()
-        except Exception as e:
-            log.warning(f"Failed to fetch issues for {owner}/{repo}: {e}")
-            return [], 0
+
+        items: list[dict] = []
+        page = 1
+        while len(items) < max_issues:
+            try:
+                r = self.session.get(api, params={**params, "page": page},
+                                     headers=headers, timeout=20)
+                if r.status_code in (403, 429):
+                    log.warning(f"GitHub rate limit on /issues for {owner}/{repo} "
+                                f"(page {page}); собрано {len(items)}")
+                    break
+                r.raise_for_status()
+                batch = r.json()
+            except Exception as e:
+                log.warning(f"Failed to fetch issues for {owner}/{repo}: {e}")
+                break
+            if not isinstance(batch, list) or not batch:
+                break
+            items.extend(batch)
+            if len(batch) < params["per_page"]:
+                break               # последняя страница
+            page += 1
+            if page > 10:           # страховка от зацикливания на 1000 issues
+                log.info("Issues pagination capped at 10 pages")
+                break
 
         texts: list[str] = []
         for it in items[:max_issues]:
@@ -275,93 +353,122 @@ class GitHubCrawler(BaseCrawler):
                 f"Author: {user} | State: {state_v}"
                 + (f" | Labels: {label_str}" if label_str else "")
                 + "\n\n"
-                f"{body}"
+                + (f"{body}\n" if body else "")
             )
+            if comments_per_issue > 0 and number != "?":
+                comments = self._fetch_issue_comments(
+                    owner, repo, number, headers, comments_per_issue)
+                if comments:
+                    section += "\n--- Комментарии ---\n" + "\n".join(comments)
             texts.append(section)
 
         return texts, len(texts)
 
+    def _fetch_issue_comments(self, owner: str, repo: str, number: int | str,
+                              headers: dict, max_comments: int) -> list[str]:
+        """Комментарии под issue/PR — по 100 на страницу, не больше max_comments."""
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/{number}/comments"
+        out: list[str] = []
+        page = 1
+        while len(out) < max_comments:
+            try:
+                r = self.session.get(url, params={"per_page": min(max_comments, 100),
+                                                  "page": page},
+                                     headers=headers, timeout=20)
+                if r.status_code != 200:
+                    break
+                batch = r.json()
+            except Exception as e:
+                log.debug(f"comments fetch failed for {owner}/{repo}#{number}: {e}")
+                break
+            if not isinstance(batch, list) or not batch:
+                break
+            for c in batch:
+                if len(out) >= max_comments:
+                    break
+                author = (c.get("user") or {}).get("login") or "anonymous"
+                body = (c.get("body") or "").strip()
+                if body:
+                    out.append(f"[{author}]: {body}")
+            if len(batch) < min(max_comments, 100):
+                break
+            page += 1
+        return out
+
     def _fetch_wiki(
         self, owner: str, repo: str, headers: dict,
         docs_extensions: list[str],
-    ) -> tuple[list[str], list[dict], bool]:
-        """Клонировать GitHub Wiki как ZIP-архив.
+        skip_paths: set[str] | None = None,
+    ) -> tuple[list[str], bool]:
+        """Скачать Wiki репозитория: {owner}/{repo}.wiki (I8).
 
-        Wiki-репозитории имеют вид {owner}/{repo}.wiki.git. Их можно скачать как
-        https://github.com/{owner}/{repo}/wiki (HTML) или как ZIP через архив
-        refs/heads/master.zip. Здесь используем второй подход, чтобы получить
-        исходные .md-файлы.
+        GitHub хранит wiki в ОТДЕЛЬНОМ репозитории `{repo}.wiki`; прежний код
+        качал архив самого репозитория, из-за чего «WIKI» в контенте была
+        копией кода/доков того же репо.
 
-        Возвращает (texts, downloaded_files, success).
+        Возвращает (texts, success). `skip_paths` — файлы, уже попавшие в
+        content (дедупликация с основным проходом по архиву).
         """
-        wiki_zip_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
-        # Попробуем также main, т.к. новые wiki используют main
-        wiki_fallback_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
-
-        try:
-            r = self.session.get(wiki_zip_url, timeout=60,
-                                 headers={**headers, "Accept": "application/vnd.github+json"})
-            if r.status_code == 404:
-                r = self.session.get(wiki_fallback_url, timeout=60, headers=headers)
-                if r.status_code == 404:
-                    return [], [], False
-            r.raise_for_status()
-        except Exception as e:
-            log.debug(f"Wiki not available for {owner}/{repo}: {e}")
-            return [], [], False
-
-        texts: list[dict] = []  # т.е. (path, content)
-        downloaded_files: list[dict] = []
-        try:
-            zf = zipfile.ZipFile(io.BytesIO(r.content))
-            for name in zf.namelist():
-                if name.endswith("/"):
-                    continue
-                rel_path = name.split("/", 1)[-1] if "/" in name else name
-                ext = os.path.splitext(rel_path)[1].lower()
-                if ext not in docs_extensions and ext not in (".md", ".rst", ".txt"):
-                    continue
-                try:
-                    raw = zf.read(name)
-                    text = raw.decode("utf-8", errors="replace")
-                    texts.append(f"=== Wiki: {rel_path} ===\n{text}")
-                except Exception:
-                    continue
-        except zipfile.BadZipFile:
-            return [], [], False
-
-        return texts, downloaded_files, True
-
-    def _collect_docs_from_zip(
-        self,
-        zf: zipfile.ZipFile,
-        root_prefix: str,
-        docs_extensions: list[str],
-    ) -> list[str]:
-        """Найти файлы в docs/, doc/, documentation/ директориях ZIP-архива.
-
-        Возвращает список строк вида '=== docs/file.md ===\n{content}'.
-        """
-        docs_dirs = ("docs/", "doc/", "documentation/", "Documentation/", "Docs/")
+        skip_paths = skip_paths or set()
+        base = f"https://github.com/{owner}/{repo}.wiki/archive/refs/heads"
         texts: list[str] = []
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            name = info.filename
-            rel_path = name[len(root_prefix) + 1:] if name.startswith(root_prefix + "/") else name
-            # Проверяем, что путь начинается с одной из docs-директорий
-            if not any(rel_path.startswith(d) for d in docs_dirs):
-                continue
-            ext = os.path.splitext(rel_path)[1].lower()
-            if ext not in docs_extensions:
-                continue
+        archive_path: Path | None = None
+
+        for branch in ("master", "main"):
             try:
-                raw = zf.read(info)
-                text = raw.decode("utf-8", errors="replace")
-                texts.append(f"=== {rel_path} ===\n{text}")
-            except Exception:
+                r = self.session.get(f"{base}/{branch}.zip", timeout=60,
+                                     headers=headers, stream=True)
+                if r.status_code == 404:
+                    continue
+                r.raise_for_status()
+                tmp = tempfile.NamedTemporaryFile(prefix="cb_wiki_", suffix=".zip",
+                                                  delete=False)
+                max_bytes = self.config.crawlers.github.max_archive_mb * 1024 * 1024
+                written = 0
+                with tmp as f:
+                    for chunk in r.iter_content(65536):
+                        written += len(chunk or b"")
+                        if written > max_bytes:
+                            log.warning("Wiki archive too large, skipped")
+                            Path(tmp.name).unlink(missing_ok=True)
+                            return [], False
+                        f.write(chunk)
+                archive_path = Path(tmp.name)
+                break
+            except Exception as e:
+                log.debug(f"wiki branch {branch} unavailable for {owner}/{repo}: {e}")
                 continue
-        return texts
+
+        if archive_path is None:
+            return [], False
+
+        try:
+            with zipfile.ZipFile(archive_path) as zf:
+                names = [n for n in zf.namelist() if not n.endswith("/")]
+                if not names:
+                    return [], False
+                root_prefix = names[0].split("/", 1)[0]
+                for name in names:
+                    if not name.startswith(root_prefix + "/"):
+                        continue
+                    rel_path = name[len(root_prefix) + 1:]
+                    if rel_path in skip_paths:
+                        continue
+                    if not rel_path.lower().endswith(".md"):
+                        continue          # wiki репозиторий — это .md страницы
+                    try:
+                        raw = zf.read(name)
+                    except Exception:
+                        continue
+                    text = self._decode(raw)
+                    title = rel_path[:-3].replace("_", " ").replace("/", " › ")
+                    texts.append(f"=== Wiki: {title} ===\n{text}")
+        except zipfile.BadZipFile:
+            return [], False
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+        return texts, True
 
     def _fetch_license(self, owner: str, repo: str, headers: dict) -> str | None:
         try:
@@ -375,6 +482,27 @@ class GitHubCrawler(BaseCrawler):
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _is_kicad(rel_path: str) -> bool:
+        """KiCad/ECAD файлы по расширению пути (не «расширение — часть слова»)."""
+        lowered = rel_path.lower()
+        return lowered.endswith((".kicad_sch", ".kicad_pcb", ".kicad_pro",
+                                 ".dcm", ".lib", ".brd", ".sch"))
+
+    @staticmethod
+    def _decode(raw: bytes) -> str:
+        """UTF-8 → чарсдет → replace (то, что раньше было инлайном в two местах)."""
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                import charset_normalizer
+                guess = charset_normalizer.detect(raw)
+                enc = guess.get("encoding") or "utf-8"
+                return raw.decode(enc, errors="replace")
+            except Exception:
+                return raw.decode("utf-8", errors="replace")
 
     def _safe_save(self, rel_path: str, raw: bytes) -> str | None:
         """Сохранить файл из архива безопасно (без Zip Slip).

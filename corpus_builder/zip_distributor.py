@@ -11,12 +11,16 @@
 Или программно:
     from corpus_builder.zip_distributor import create_distribution
     create_distribution("dist/CorpusBuilder", "dist/CorpusBuilder-0.2.0.zip")
+
+Или из CLI собранного проекта:
+    corpus-builder package --build-dir dist/CorpusBuilder --zip
+
+NOTE: это инструмент сборки, не часть рантайма: он вызывается из build.sh,
+`python -m corpus_builder.zip_distributor` и CLI-команды `package`.
 """
 from __future__ import annotations
 
 import os
-import shutil
-import sys
 import zipfile
 from pathlib import Path
 
@@ -121,12 +125,12 @@ def print_distribution_info(dist_info: dict) -> None:
     print("\n" + "=" * 60)
     print("  Distribution created successfully")
     print("=" * 60)
-    print(f"\n  Full distribution:")
+    print("\n  Full distribution:")
     print(f"    File: {dist_info['distribution_zip']}")
     print(f"    Size: {dist_info['distribution_size_mb']} MB")
 
     if "patch_zip" in dist_info:
-        print(f"\n  Auto-update patch:")
+        print("\n  Auto-update patch:")
         print(f"    File: {dist_info['patch_zip']}")
         print(f"    Size: {dist_info['patch_size_kb']} KB")
         ratio = dist_info['distribution_size'] / max(dist_info.get('patch_size', 1), 1)

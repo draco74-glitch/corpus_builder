@@ -1,7 +1,5 @@
 """Тесты на per-URL timeout в pipeline."""
 import time
-import threading
-from unittest import mock
 
 import pytest
 
@@ -11,7 +9,7 @@ def test_crawl_with_timeout_completes():
     from corpus_builder.pipeline import _crawl_with_timeout
 
     class FakeCrawler:
-        def crawl(self, url, categories=None):
+        def crawl(self, url, categories=None, source=None):
             class R:
                 status = "ok"
                 content = "test"
@@ -29,7 +27,7 @@ def test_crawl_with_timeout_raises_on_timeout():
     from corpus_builder.pipeline import _crawl_with_timeout, _CrawlTimeoutError
 
     class SlowCrawler:
-        def crawl(self, url, categories=None):
+        def crawl(self, url, categories=None, source=None):
             time.sleep(5)  # 5 секунд
             return None
 
@@ -43,7 +41,7 @@ def test_crawl_with_timeout_propagates_exception():
     from corpus_builder.pipeline import _crawl_with_timeout
 
     class CrashingCrawler:
-        def crawl(self, url, categories=None):
+        def crawl(self, url, categories=None, source=None):
             raise ValueError("Test crash")
 
     crawler = CrashingCrawler()

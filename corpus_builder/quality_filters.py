@@ -1,29 +1,39 @@
 """Расширенные фильтры качества для корпуса:
   1. Perplexity-фильтр через kenlm (нужна модель .arpa или .binary)
   2. Классификатор языка через fasttext-langdetect (точнее эвристики)
-  3. Токсичность/спам-фильтр — простой эвристический детектор для RU/EN
+  3. Токсичность/спам-фильтр — детектор явных признаков рекламы для RU/EN
   4. Соотношение код/текст — выделение code blocks из HTML-текста
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
 
 # Ленивый импорт — модули тяжёлые, не нужны для всех тестов
 _fasttext_detector = None
 _kenlm_model = None
 
-# Regex для типичных признаков спама/рекламы
-_SPAM_PATTERNS = [
-    r"\b(купить|заказать|цена|скидк[аи]|акция|распродаж[аи]|доставка)\b",
-    r"\b(купон|промокод|бесплатно|выиграй|розыгрыш)\b",
-    r"\b(кредит|займ|микрозайм|взять\s+в\s+долг)\b",
-    r"\b(казино|ставки?|беттинг|букмекер)\b",
-    r"\b(?!.*\b(radio|electronics|circuit|schematic|datasheet|микросхем|транзистор|печатн\w+ пл|схем[аы]|электрон)\b).{200,}$",  # длинный текст без технических слов
-    r"(https?://\S+\s+){5,}",  # 5+ URL подряд — явная мусорная страница
-]
-_SPAM_RE = [re.compile(p, re.IGNORECASE) for p in _SPAM_PATTERNS]
+# Regex для типичных признаков спама/рекламы.
+#
+# ВАЖНО (C1): здесь НЕ должно быть правила «длинный текст без технических
+# слов = спам». Такое правило совпадало с ЛЮБЫМ текстом длиннее 200 символов
+# (`.` без DOTALL не видит `\n`, а `{200,}$` матчит любой достаточно длинный
+# хвост), и фильтр качества с дефолтным `spam_check: true` молча удалял из
+# корпуса весь нелектронный текст — включая страницы про I2C и резисторы,
+# если в них не встречалось слово из списка «технических». Спам обязан
+# определяться по ЯВНЫМ признакам рекламы, а не по их отсутствию.
+_SPAM_PATTERNS: dict[str, str] = {
+    "commercial": r"\b(куп[иу][а-я]{0,3}|заказыв?а[яе]?м?\w*|скидк[аи]|акци[яи]|"
+                  r"распродаж[аи]|промокод|купон|дешевл[её]?\w*)\b",
+    "giveaway": r"\b(выигрыш|выигра[йя]\w*|розыгрыш|"
+                r"бесплатн\w+\s+(подарок|доставк|сертификат))\b",
+    "financial_spam": r"\b(кредит[ыаое]?|займ[ауы]?|микрозайм\w*|взять\s+в\s+долг)\b",
+    "gambling": r"\b(казино|беттинг|букмекер|ставк[аи]\s+на\s+спорт)\b",
+    "link_farm": r"(https?://\S+\s+){5,}",  # 5+ URL подряд — явная мусорная страница
+}
+_SPAM_RE: dict[str, re.Pattern[str]] = {
+    name: re.compile(p, re.IGNORECASE) for name, p in _SPAM_PATTERNS.items()
+}
 
 # Код-блоки в тексте (markdown + bbcode + простой <pre>)
 _CODE_RE = re.compile(
@@ -74,7 +84,7 @@ def load_kenlm_model(model_path: str | Path) -> bool:
     """Загрузить kenlm-модель (.binary или .arpa).
 
     Модель нужно скачать отдельно — например, с:
-      - https://foundationmodel.org/models/kenlm/  (RU, EN, и др.)
+      - https://fasttext.cc/docs/en/language-identification.html (язык)
       - https://github.com/kpu/kenlm (самодельная на вашем корпусе)
 
     Без модели perplexity-фильтр работать не будет, остальное работает.
@@ -98,25 +108,19 @@ def compute_perplexity(text: str) -> float | None:
 
     Возвращает None, если модель не загружена.
     """
-    global _kenlm_model
     if _kenlm_model is None:
         return None
     if not text or len(text.strip()) < 50:
         return None
     try:
-        # kenlm принимает строку с токенами, разделёнными пробелами
-        import kenlm
         # Нормализуем: убираем переносы строк, оставляем буквенно-цифровые токены
         tokens = re.findall(r"\w+", text.lower())
         if not tokens:
             return None
         normalized = " ".join(tokens)
-        score = _kenlm_model.score(normalized)
-        # Переводим log10 probability → perplexity
-        # ppl = 10^(-score / num_tokens)
         n_tokens = len(tokens)
-        if n_tokens == 0:
-            return None
+        score = _kenlm_model.score(normalized)
+        # Переводим log10 probability → perplexity: ppl = 10^(-score / n_tokens)
         ppl = 10 ** (-score / n_tokens)
         return float(ppl)
     except Exception:
@@ -135,39 +139,50 @@ def is_text_perplexity_ok(text: str, max_ppl: float = 1000.0) -> bool:
 # Токсичность/спам-фильтр
 # ============================================================
 
-def is_spam_or_low_quality(text: str, technical_keywords: list[str] | None = None) -> bool:
-    """Простой эвристический детектор спама/мусора.
+# Слова, наличие которых делает текст «техническим». Спам-фильтр срабатывает
+# только на тексты без единого такого слова (см. is_spam_or_low_quality).
+DEFAULT_TECHNICAL_KEYWORDS = [
+    "electronics", "circuit", "schematic", "datasheet", "microcontroller",
+    "component", "resistor", "capacitor", "voltage", "current", "signal",
+    "транзистор", "микросхема", "схема", "печатная плата", "питание",
+    "компонент", "сопротивление", "ёмкость", "индуктивность", "напряжение",
+    "сигнал", "усилитель", "датчик", "резистор", "конденсатор",
+]
 
-    Возвращает True, если текст выглядит как спам/реклама/мусор.
-    Дополнительный список technical_keywords: если хоть одно встречается —
-    текст считается техническим и не помечается как спам (даже если есть
-    слова типа «купить» — в datasheet'ах бывает «buy» в начале).
 
-    По умолчанию список технических слов уже зашит.
+def spam_reason(text: str, technical_keywords: list[str] | None = None) -> str | None:
+    """Вернуть имя сработавшего спам-паттерна или None.
+
+    Нужно для честной статистики отказа: без причины отбраковки
+    `rejected_by_reason` превращается в «unknown», и дефекты не видно (C1).
     """
     if not text or len(text.strip()) < 30:
-        return False  # короткие тексты не рассматриваем
+        return None      # короткие тексты не рассматриваем
 
-    default_keywords = [
-        "electronics", "circuit", "schematic", "datasheet", "microcontroller",
-        "транзистор", "микросхема", "схема", "печатная плата", "питание",
-        "компонент", "сопротивление", "ёмкость", "индуктивность",
-    ]
-    keywords = technical_keywords or default_keywords
-
+    keywords = technical_keywords or DEFAULT_TECHNICAL_KEYWORDS
     text_lower = text.lower()
 
     # Если текст содержит техническое слово — не считаем спамом
-    for kw in keywords:
-        if kw.lower() in text_lower:
-            return False
+    if any(kw.lower() in text_lower for kw in keywords):
+        return None
 
-    # Проверяем спам-паттерны
-    for pattern in _SPAM_RE:
+    for name, pattern in _SPAM_RE.items():
         if pattern.search(text):
-            return True
+            return name
+    return None
 
-    return False
+
+def is_spam_or_low_quality(text: str, technical_keywords: list[str] | None = None) -> bool:
+    """Простой эвристический детектор спама/рекламы.
+
+    Возвращает True только при ЯВНОМ признаке рекламы: коммерческие клише,
+    финансовые/игровые слова или «ссылочная ферма».
+
+    Дополнительный список technical_keywords: если хоть одно встречается —
+    текст считается техническим и не помечается как спам (в datasheet'ах
+    бывает «buy»/«заказать» в разделе поставщиков).
+    """
+    return spam_reason(text, technical_keywords) is not None
 
 
 # ============================================================
@@ -252,8 +267,9 @@ def evaluate_quality(
       {
         passed: bool,
         metrics: {chars, alpha_ratio, dup_line_ratio, code_ratio, language, perplexity},
-        rejection_reason: str | None,
-        code_blocks: list[dict],  # извлечённые блоки кода
+        rejection_reason: str | None,   # первая сработавшая проверка
+        rejection_reasons: list[str],   # все сработавшие проверки
+        code_blocks: list[dict],        # извлечённые блоки кода
       }
     """
     from .text_utils import estimate_quality  # ленивый импорт
@@ -284,31 +300,35 @@ def evaluate_quality(
         "perplexity": round(perplexity, 2) if perplexity is not None else None,
     }
 
-    # Проверки
-    rejection_reason = None
+    # Проверки: собираем ВСЕ причины (см. C1 — «unknown» в отчёте скрывал,
+    # что корпус отсеяли не длиной и не языком).
+    rejection_reasons: list[str] = []
 
     if metrics["chars"] < min_chars:
-        rejection_reason = "too_short"
-    elif metrics["chars"] > max_chars:
-        rejection_reason = "too_long"
-    elif metrics["alpha_ratio"] < (1 - max_non_alpha_ratio):
-        rejection_reason = "low_alpha"
-    elif metrics["dup_line_ratio"] > max_dup_line_ratio:
-        rejection_reason = "too_many_dup_lines"
-    elif code_ratio > max_code_ratio:
-        rejection_reason = "too_much_code"
-    elif spam_check and is_spam_or_low_quality(text):
-        rejection_reason = "spam_or_low_quality"
-    elif language_check and language and language not in languages_allowed:
-        # mixed разрешён только если 'mixed' в languages_allowed
-        if "mixed" not in languages_allowed or language != "mixed":
-            rejection_reason = f"wrong_language:{language}"
-    elif perplexity_check and perplexity is not None and perplexity > max_perplexity:
-        rejection_reason = "high_perplexity"
+        rejection_reasons.append("too_short")
+    if metrics["chars"] > max_chars:
+        rejection_reasons.append("too_long")
+    if metrics["alpha_ratio"] < (1 - max_non_alpha_ratio):
+        rejection_reasons.append("low_alpha")
+    if metrics["dup_line_ratio"] > max_dup_line_ratio:
+        rejection_reasons.append("too_many_dup_lines")
+    if code_ratio > max_code_ratio:
+        rejection_reasons.append("too_much_code")
+    if spam_check:
+        spam = spam_reason(text)
+        if spam:
+            rejection_reasons.append(f"spam:{spam}")
+    if language_check and language and language not in languages_allowed:
+        rejection_reasons.append(f"wrong_language:{language}")
+    if perplexity_check and perplexity is not None and perplexity > max_perplexity:
+        rejection_reasons.append("high_perplexity")
+
+    rejection_reason = rejection_reasons[0] if rejection_reasons else None
 
     return {
         "passed": rejection_reason is None,
         "metrics": metrics,
         "rejection_reason": rejection_reason,
+        "rejection_reasons": rejection_reasons,
         "code_blocks": code_blocks,
     }

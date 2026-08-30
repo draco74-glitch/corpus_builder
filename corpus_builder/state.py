@@ -5,7 +5,6 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Iterable
 
 from .logging_setup import get_logger
 
@@ -41,6 +40,17 @@ class State:
     def reload_silent(self) -> None:
         """Перечитать state без логирования — для периодических опросов в GUI."""
         self._load(silent=True)
+
+    def reset(self) -> None:
+        """Забыть всё состояние (запуск без resume)."""
+        with self._lock:
+            self._done.clear()
+            self._errors.clear()
+
+    def clear_errors(self) -> None:
+        """Разрешить повторную обработку ранее упавших URL (retry-errors)."""
+        with self._lock:
+            self._errors.clear()
 
     def is_done(self, url: str) -> bool:
         with self._lock:

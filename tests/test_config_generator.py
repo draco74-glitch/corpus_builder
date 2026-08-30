@@ -1,22 +1,17 @@
 """Тесты на config_generator."""
-import json
-import os
-from pathlib import Path
 
 import yaml
 
+import corpus_builder.config_generator as cg
 from corpus_builder.config_generator import (
     build_config,
     detect_source_type,
     from_csv,
     from_excel,
     make_source,
-    merge_sources,
-    merge_sources_into_config,
     save_template_xlsx,
     seed_crawl_depth,
 )
-import corpus_builder.config_generator as cg
 
 
 def test_detect_source_type_github():

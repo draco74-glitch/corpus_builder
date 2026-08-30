@@ -1,13 +1,9 @@
 """Тесты на auto_updater и zip_distributor."""
-import json
-import os
-import tempfile
 import zipfile
 from pathlib import Path
 from unittest import mock
 
 import pytest
-
 
 # ============================================================
 # AutoUpdater — тесты логики (без сети)
@@ -358,6 +354,7 @@ def test_commit_updater_get_target_dir_dev():
 def test_commit_updater_download_file():
     """Тест скачивания файла через Contents API (мок)."""
     import base64
+
     from corpus_builder.auto_updater import CommitUpdater
 
     updater = CommitUpdater("owner/repo", "main")

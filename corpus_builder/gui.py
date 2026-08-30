@@ -7,51 +7,78 @@
 """
 from __future__ import annotations
 
-import os
-import sys
+import copy
 import json
-import shutil
+import os
 import subprocess
+import sys
 from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
-from PySide6.QtGui import (
-    QAction, QColor, QFont, QIcon, QTextCursor, QPalette, QPixmap, QKeySequence
-)
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QFormLayout, QPushButton, QLabel, QLineEdit, QFileDialog, QProgressBar,
-    QTextEdit, QTableWidget, QTableWidgetItem, QTabWidget, QCheckBox, QSpinBox,
-    QComboBox, QMessageBox, QSystemTrayIcon, QMenu, QGroupBox, QSplitter,
-    QHeaderView, QStatusBar, QStyle, QFrame, QToolButton, QSizePolicy, QDialog,
-    QListWidget, QListWidgetItem, QScrollArea, QButtonGroup, QRadioButton, QSlider
-)
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-
-from .app_settings import AppSettings
-from .settings_dialog import SettingsDialog
-from .auto_updater import AutoUpdater, CommitUpdater
-from .auto_discover import AutoDiscover
-from .startup_dialog import StartupDialog
-from .merge_config_dialog import MergeConfigDialog
-from .gui_improvements import (
-    ConfigDropArea, RecordsTableContextMenu, LogSearchBar,
-    SplitterStateSaver, ToastNotification, apply_theme, get_theme_qss, THEMES,
-    KicadPreviewDialog, RecentConfigsManager, ProgressBarWithETA,
-    DiffCorpusDialog, YamlEditorDialog, DashboardDialog, FirstRunWizard,
-    set_language, get_language, tr,
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QKeySequence, QPalette, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QStatusBar,
+    QStyle,
+    QSystemTrayIcon,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
-# В打包анной версии через PyInstaller __package__ может быть пустым
-from .config import load_config, ensure_output_dirs
+from .app_settings import AppSettings
+from .auto_updater import CommitUpdater
+
+# В собранной через PyInstaller версии __package__ может быть пустым
+from .config import ensure_output_dirs, load_config
 from .config_generator_dialog import ConfigGeneratorDialog
+from .gui_improvements import (
+    DashboardDialog,
+    DiffCorpusDialog,
+    FirstRunWizard,
+    KicadPreviewDialog,
+    RecentConfigsManager,
+    SplitterStateSaver,
+    ToastNotification,
+    YamlEditorDialog,
+    apply_theme,
+    get_language,
+    get_theme_qss,
+    set_language,
+    tr,
+)
+from .logging_setup import get_logger
+from .merge_config_dialog import MergeConfigDialog
 from .models import AppConfig
 from .pipeline import run_crawl, run_postprocess
 from .postproc.export import compute_statistics, export_huggingface, export_parquet
+from .settings_dialog import SettingsDialog
+from .startup_dialog import StartupDialog
 from .state import State
+
+log = get_logger(__name__)
 
 
 # ---------- Цветовая палитра (тёмная тема, как VS Code Dark+) ----------
@@ -100,6 +127,23 @@ class CrawlWorker(QThread):
     def run(self) -> None:
         try:
             if self.mode == "crawl":
+                if getattr(self.config.pipeline, "use_async", False):
+                    import asyncio
+
+                    from .async_pipeline import run_async_crawl
+                    stats = asyncio.run(run_async_crawl(
+                        self.config,
+                        resume=self.resume,
+                        retry_errors=self.retry_errors,
+                        limit=self.limit,
+                        source_type=self.source_type,
+                        on_progress=self._on_progress,
+                        on_record=self._on_record,
+                        on_log=self.log_message.emit,
+                        should_stop=self.should_stop,
+                    ))
+                    self.finished_stats.emit(stats)
+                    return
                 stats = run_crawl(
                     self.config,
                     resume=self.resume,
@@ -116,6 +160,7 @@ class CrawlWorker(QThread):
                     self.config,
                     on_progress=self._on_progress,
                     on_log=self.log_message.emit,
+                    should_stop=self.should_stop,
                 )
             else:
                 stats = {"error": f"Unknown mode: {self.mode}"}
@@ -398,7 +443,6 @@ class MainWindow(QMainWindow):
 
     def _export_settings(self) -> None:
         """Экспорт настроек в JSON."""
-        from pathlib import Path
         path, _ = QFileDialog.getSaveFileName(
             self, tr("menu_export_settings"), "corpus_builder_settings.json", "JSON (*.json)"
         )
@@ -446,7 +490,7 @@ class MainWindow(QMainWindow):
             self.app_settings.save()
             self.app_settings.setup_env_vars()
             self._on_settings_changed()
-            QMessageBox.information(self, "Сброшено", "Настройки сброшены к defaults.")
+            QMessageBox.information(self, tr("export_ok"), tr("settings_reset_ok"))
 
     def _change_theme(self, theme: str) -> None:
         """Сменить тему оформления."""
@@ -479,8 +523,8 @@ class MainWindow(QMainWindow):
 
     def _open_documentation(self) -> None:
         """Открыть документацию в браузере."""
-        from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl("https://github.com/draco74-glitch/corpus_builder"))
 
     def _restore_window_geometry(self) -> None:
@@ -489,7 +533,8 @@ class MainWindow(QMainWindow):
         h = self.app_settings.gui.window_height
         self.resize(w, h)
         # Проверка обновлений при старте (через 2 секунды, чтобы не блокировать UI)
-        QTimer.singleShot(2000, self._check_for_updates)
+        if getattr(self.app_settings.gui, "check_updates_on_start", True):
+            QTimer.singleShot(2000, self._check_for_updates)
 
     def _check_for_updates(self) -> None:
         """Проверить наличие новых коммитов на GitHub (без релизов)."""
@@ -521,7 +566,7 @@ class MainWindow(QMainWindow):
     def _apply_update(self) -> None:
         """Применить обновление (скачать .py файлы из последнего коммита)."""
         if not hasattr(self, "_updater") or not self._updater:
-            QMessageBox.information(self, "Обновление", "Нет доступных обновлений.")
+            QMessageBox.information(self, tr("menu_check_update"), tr("update_none"))
             return
 
         commit_info = getattr(self, "_has_update", {}) or {}
@@ -691,7 +736,7 @@ class MainWindow(QMainWindow):
         )
         self.btn_generate_config.clicked.connect(self._on_open_config_generator)
         self.btn_crawl = QPushButton(tr("btn_crawl"))
-        self.btn_crawl.setStyleSheet(f"font-weight: bold; min-height: 28px;")
+        self.btn_crawl.setStyleSheet("font-weight: bold; min-height: 28px;")
         self.btn_crawl.clicked.connect(self._on_start_crawl)
         self.btn_postprocess = QPushButton(tr("btn_postprocess"))
         self.btn_postprocess.setProperty("secondary", True)
@@ -901,12 +946,18 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка конфигурации", str(e))
 
     def _build_effective_config(self) -> AppConfig | None:
-        """Возвращает конфиг с перекрытым output dir, если пользователь указал путь."""
+        """Конфиг с перекрытым output dir (без мутации self.config — I9).
+
+        Раньше метод возвращал ТОТ ЖЕ объект, что лежит в self.config, и
+        подменял в нём пути навсегда: «выбрать папку» для одного запуска
+        ломало следующую загрузку config.yaml, а worker-поток читал объект,
+        который GUI мог изменить в любой момент.
+        """
         if self.config is None:
             QMessageBox.warning(self, "Нет конфигурации",
                                  "Сначала выберите config.yaml")
             return None
-        cfg = self.config
+        cfg = copy.deepcopy(self.config)
         out_dir = self.output_edit.text().strip()
         if out_dir:
             out_dir_path = Path(out_dir)
@@ -930,7 +981,6 @@ class MainWindow(QMainWindow):
             if dialog.exec() == QDialog.Accepted:
                 self._log("INFO", "Конфиги объединены")
         except Exception as e:
-            import traceback
             self._log("ERROR", f"Ошибка объединения: {e}")
             QMessageBox.critical(self, "Ошибка",
                 f"Не удалось объединить конфиги:\n\n{e}")
@@ -985,7 +1035,7 @@ class MainWindow(QMainWindow):
         if cfg is None:
             return
         if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "Занято", "Уже выполняется задача. Остановите её перед запуском новой.")
+            QMessageBox.warning(self, tr("busy"), tr("thread_busy_start"))
             return
 
         resume = self.chk_resume.isChecked()
@@ -1008,13 +1058,13 @@ class MainWindow(QMainWindow):
         if cfg is None:
             return
         if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "Занято", "Дождитесь завершения текущей задачи.")
+            QMessageBox.warning(self, tr("busy"), tr("busy_task"))
             return
 
         corpus_file = Path(cfg.output.corpus_file)
         if not corpus_file.exists() or corpus_file.stat().st_size == 0:
-            QMessageBox.warning(self, "Нет данных",
-                                f"Сначала запустите краулинг. Файл корпуса пуст: {corpus_file}")
+            QMessageBox.warning(self, tr("no_data"),
+                                f"{tr('no_corpus_desc')}: {corpus_file}")
             return
 
         self._set_running_state(True)
@@ -1027,7 +1077,7 @@ class MainWindow(QMainWindow):
 
     def _on_stop(self) -> None:
         if self.worker and self.worker.isRunning():
-            self._log("WARN", "Останавливаю после текущего URL...")
+            self._log("WARN", tr("crawl_stopped"))
             self.worker.request_stop()
             self.btn_stop.setEnabled(False)
 
@@ -1037,8 +1087,8 @@ class MainWindow(QMainWindow):
             return
         corpus_file = Path(cfg.output.corpus_file).parent / "corpus_final.jsonl"
         if not corpus_file.exists():
-            QMessageBox.warning(self, "Нет корпуса",
-                                f"Файл не найден: {corpus_file}\nСначала запустите пост-обработку.")
+            QMessageBox.warning(self, tr("no_corpus"),
+                                f"{tr('no_corpus_final')}\n{corpus_file}")
             return
         target = QFileDialog.getExistingDirectory(self, "Куда сохранить HuggingFace dataset")
         if not target:
@@ -1057,8 +1107,8 @@ class MainWindow(QMainWindow):
             return
         corpus_file = Path(cfg.output.corpus_file).parent / "corpus_final.jsonl"
         if not corpus_file.exists():
-            QMessageBox.warning(self, "Нет корпуса",
-                                f"Файл не найден: {corpus_file}\nСначала запустите пост-обработку.")
+            QMessageBox.warning(self, tr("no_corpus"),
+                                f"{tr('no_corpus_final')}\n{corpus_file}")
             return
         target, _ = QFileDialog.getSaveFileName(
             self, "Куда сохранить Parquet", "corpus.parquet", "Parquet (*.parquet)"
@@ -1204,8 +1254,8 @@ class MainWindow(QMainWindow):
             f"Суммарно символов: {stats['total_chars']:,}\n"
             f"Средняя длина: {stats['avg_chars']:,} символов\n\n"
             f"По типам:\n" + "\n".join(f"  {k}: {v}" for k, v in stats.get("by_type", {}).items()) + "\n\n"
-            f"По языкам:\n" + "\n".join(f"  {k}: {v}" for k, v in stats.get("by_language", {}).items()) + "\n\n"
-            f"По лицензиям:\n" + "\n".join(f"  {k}: {v}" for k, v in stats.get("by_license", {}).items())
+            "По языкам:\n" + "\n".join(f"  {k}: {v}" for k, v in stats.get("by_language", {}).items()) + "\n\n"
+            "По лицензиям:\n" + "\n".join(f"  {k}: {v}" for k, v in stats.get("by_license", {}).items())
         )
         self.stats_text.setPlainText(summary)
 
@@ -1274,13 +1324,13 @@ class MainWindow(QMainWindow):
         lines = [
             "=== ПОСТ-ОБРАБОТКА ЗАВЕРШЕНА ===",
             "",
-            f"Дедупликация:",
+            "Дедупликация:",
             f"  Всего: {d.get('total', 0)}",
             f"  Оставлено: {d.get('kept', 0)}",
             f"  Удалено дубликатов: {d.get('removed', 0)}",
             f"  Дубликатов изображений: {d.get('image_duplicates', 0)}",
             "",
-            f"Фильтр качества:",
+            "Фильтр качества:",
             f"  Всего: {q.get('total', 0)}",
             f"  Прошло: {q.get('kept', 0)}",
             f"  Отброшено: {q.get('rejected_total', 0)}",
@@ -1289,7 +1339,7 @@ class MainWindow(QMainWindow):
             lines.append(f"    {reason}: {count}")
         lines.extend([
             "",
-            f"Пары для instruction-tuning:",
+            "Пары для instruction-tuning:",
             f"  Всего: {p.get('total_pairs', 0)}",
         ])
         for ptype, count in (p.get("by_type") or {}).items():
@@ -1403,7 +1453,7 @@ class MainWindow(QMainWindow):
 
     def _show_toast(self, title: str, message: str, toast_type: str = "info") -> None:
         """Показать toast-уведомление (Улучшение E)."""
-        ToastNotification.show(self, title, message, toast_type)
+        ToastNotification.display(self, title, message, toast_type)
 
     def _toggle_log_search(self) -> None:
         """Показать/скрыть поиск по логу (Улучшение C)."""
@@ -1432,12 +1482,33 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self.worker and self.worker.isRunning():
-            reply = QMessageBox.question(
-                self, "Подтверждение",
-                "Краулинг ещё идёт. Свернуть в трей или выйти?",
-                QMessageBox.Cancel | QMessageBox.Yes, QMessageBox.Yes
-            )
-            if reply == QMessageBox.Cancel:
+            # Прежний набор `QMessageBox.Cancel | QMessageBox.Yes` не давал
+            # осмысленного выбора: окно показывало «Отмена» как дефолтную кнопку,
+            # а крестик окна интерпретировался как «свернуть в трей» (I9).
+            box = QMessageBox(self)
+            box.setWindowTitle("Подтверждение")
+            box.setText("Сбор ещё идёт. Что сделать?")
+            hide_btn = box.addButton("Свернуть в трей (сбор продолжится)",
+                                     QMessageBox.ButtonRole.AcceptRole)
+            quit_btn = box.addButton("Остановить и выйти",
+                                     QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(hide_btn)
+            box.exec()
+            clicked = box.clickedButton()
+
+            if clicked is cancel_btn or clicked is None:
+                event.ignore()                # пользователь передумал
+                return
+
+            if clicked is quit_btn:
+                self.worker.request_stop()
+                if not self.worker.wait(5000):
+                    # поток daemon, процесс всё равно завершится; честно пишем в лог
+                    log.warning("Worker поток не остановился за 5s — "
+                                "он daemon и будет убит при выходе")
+                self.worker = None
+            else:                             # «свернуть в трей»
                 self.hide()
                 if self.tray:
                     self.tray.show()
@@ -1448,8 +1519,7 @@ class MainWindow(QMainWindow):
                     )
                 event.ignore()
                 return
-            self.worker.request_stop()
-            self.worker.wait(3000)
+
         self._save_session()
         self._save_splitters()
         event.accept()

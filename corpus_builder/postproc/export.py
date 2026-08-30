@@ -32,9 +32,9 @@ def export_huggingface(corpus_file: str | Path, output_dir: str | Path) -> dict:
     Структура:
       output_dir/
       ├── data.jsonl             # сама выборка
-      ├── dataset_infos.json     # метаданные
-      ├── README.md              # карточка датасета
-      └── loading_script.py      # загрузчик (опц., для datasets.load_dataset)
+      └── dataset_infos.json     # метаданные
+    Загрузчик: `load_dataset("json", data_files="data.jsonl")` — отдельный
+    loading script не генерируется.
     """
     corpus_file = Path(corpus_file)
     output_dir = Path(output_dir)
@@ -44,8 +44,7 @@ def export_huggingface(corpus_file: str | Path, output_dir: str | Path) -> dict:
     target_jsonl = output_dir / "data.jsonl"
     shutil.copy(corpus_file, target_jsonl)
 
-    # Метаданные
-    sample = next(_iter_jsonl(corpus_file), {}) or {}
+    # Метаданные: описание колонок = фактическая схема JSONL (I16), см. ниже
     features = {
         "source_url": {"_type": "Value", "dtype": "string"},
         "source_type": {"_type": "Value", "dtype": "string"},
@@ -57,7 +56,17 @@ def export_huggingface(corpus_file: str | Path, output_dir: str | Path) -> dict:
         "categories": {"_type": "Sequence", "feature": {"_type": "Value", "dtype": "string"}},
         "date_accessed": {"_type": "Value", "dtype": "string"},
         "is_duplicate": {"_type": "Value", "dtype": "bool"},
+        # поля, которые пишет краулер и которые нужны для пар instruction-данных
+        "downloaded_files": {"_type": "Sequence", "feature": {"_type": "Value",
+                                                              "dtype": "string"}},
+        "metadata": {"_type": "Value", "dtype": "string"},   # JSON-строка
     }
+    by_lang: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for r in _iter_jsonl(corpus_file):
+        by_lang[r.get("language") or "unknown"] = by_lang.get(r.get("language") or "unknown", 0) + 1
+        by_type[r.get("source_type") or "unknown"] = by_type.get(r.get("source_type") or "unknown", 0) + 1
+
     infos = {
         "corpus_builder": {
             "description": "Corpus built by corpus-builder for LLM pretraining",
@@ -66,6 +75,9 @@ def export_huggingface(corpus_file: str | Path, output_dir: str | Path) -> dict:
             "license": "mixed (see per-record 'license' field)",
             "features": features,
             "builder_name": "corpus_builder",
+            # фактические языки/типы источников вместо hardcode ru,en (I16)
+            "language": sorted(k for k in by_lang if k != "unknown"),
+            "source_types": sorted(by_type),
             "config_name": "default",
             "version": {"version_str": "0.2.0", "major": 0, "minor": 2, "patch": 0},
         }
@@ -78,8 +90,7 @@ def export_huggingface(corpus_file: str | Path, output_dir: str | Path) -> dict:
     # Карточка датасета (README.md в формате HF)
     readme = """---
 language:
-  - ru
-  - en
+{chr(10).join(f"  - {l}" for l in sorted(k for k in by_lang if k != "unknown")) or "  - unknown"}
 license: other
 task_categories:
   - text-generation
@@ -110,7 +121,11 @@ print(dataset)
 - `license` — per-record license (CC BY-SA 4.0 for SE, repo license for GitHub)
 - `quality_score` — 0..1 metric
 - `categories` — user-defined tags
-- `is_duplicate` — whether this was flagged as duplicate (kept for reference)
+- `is_duplicate` — whether this record was flagged as a duplicate
+
+NOTE: records flagged as duplicates are NOT part of the final corpus: the
+quality stage drops them. This card reflects `corpus_final.jsonl` as written
+by `run_postprocess`.
 """
     (output_dir / "README.md").write_text(readme, encoding="utf-8")
 
@@ -130,21 +145,49 @@ def export_parquet(corpus_file: str | Path, output_file: str | Path) -> dict:
 
     records = list(_iter_jsonl(corpus_file))
 
-    # Приводим к однородной схеме
+    # Однородная схема, но БЕЗ превращения unknown в «пустое значение»:
+    # "" и 0.0 читались бы ниже по потоку как настоящие данные (качество!) —
+    # вместо этого nullable-колонки (I16).
+    def col(key: str) -> list:
+        return [r.get(key) for r in records]
+
+    schema = pa.schema([
+        ("source_url", pa.string()),
+        ("source_type", pa.string()),
+        ("content", pa.string()),
+        ("content_sha1", pa.string()),
+        ("language", pa.string()),
+        ("license", pa.string()),
+        ("quality_score", pa.float64()),
+        ("is_duplicate", pa.bool_()),
+        ("categories", pa.list_(pa.string())),
+        ("date_accessed", pa.string()),
+        # служебные поля, которые раньше терялись при экспорте, но нужны для
+        # пар instruction-данных (KiCad-пути, таблицы, accepted_answer_id)
+        ("downloaded_files", pa.string()),
+        ("metadata", pa.string()),
+    ])
+
+    def json_col(key: str) -> list:
+        return [json.dumps(r.get(key) or [], ensure_ascii=False) if key == "downloaded_files"
+                else json.dumps(r.get(key) or {}, ensure_ascii=False) for r in records]
+
     cols = {
-        "source_url": [r.get("source_url", "") for r in records],
-        "source_type": [r.get("source_type", "") for r in records],
-        "content": [r.get("content", "") for r in records],
-        "content_sha1": [r.get("content_sha1", "") for r in records],
-        "language": [r.get("language") or "" for r in records],
-        "license": [r.get("license") or "" for r in records],
-        "quality_score": [r.get("quality_score") or 0.0 for r in records],
+        "source_url": [r.get("source_url") for r in records],
+        "source_type": [r.get("source_type") for r in records],
+        "content": [r.get("content") for r in records],
+        "content_sha1": [r.get("content_sha1") for r in records],
+        "language": col("language"),
+        "license": col("license"),
+        "quality_score": col("quality_score"),
         "is_duplicate": [bool(r.get("is_duplicate")) for r in records],
         "categories": [r.get("categories") or [] for r in records],
-        "date_accessed": [r.get("date_accessed", "") for r in records],
+        "date_accessed": [r.get("date_accessed") for r in records],
+        "downloaded_files": json_col("downloaded_files"),
+        "metadata": json_col("metadata"),
     }
 
-    table = pa.table(cols)
+    table = pa.table(cols, schema=schema)
     pq.write_table(table, output_file, compression="zstd")
     size = output_file.stat().st_size
     log.info(f"Exported Parquet: {len(records)} records, {size} bytes → {output_file}")

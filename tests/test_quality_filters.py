@@ -1,16 +1,14 @@
 """Тесты на расширенные фильтры качества (Этап 1)."""
-import pytest
 
 from corpus_builder.quality_filters import (
-    detect_language_fasttext,
-    is_spam_or_low_quality,
-    extract_code_blocks,
     compute_code_text_ratio,
-    evaluate_quality,
     compute_perplexity,
+    detect_language_fasttext,
+    evaluate_quality,
+    extract_code_blocks,
+    is_spam_or_low_quality,
     load_kenlm_model,
 )
-
 
 # ============================================================
 # Тесты на языковую детекцию через fasttext-langdetect

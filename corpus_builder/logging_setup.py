@@ -16,6 +16,8 @@ from loguru import logger as loguru_logger
 
 _configured = False
 _pending_log_file: str | Path | None = None
+#: id последнего добавленного файлового sink'а — чтобы не копить дубли (I8)
+_file_handler_ids: list[int] = []
 
 
 def setup_logging(log_file: str | Path | None = None, verbose: bool = False) -> None:
@@ -27,8 +29,11 @@ def setup_logging(log_file: str | Path | None = None, verbose: bool = False) -> 
     """
     global _configured, _pending_log_file
     if _configured:
+        # Повторный вызов (каждый run_crawl / CLI-команда) НЕ должен добавлять
+        # ещё один файловый sink: loguru пишет record каждому handler-у, и после
+        # N запусков одна строка дублировалась N раз.
         if log_file is not None:
-            _add_file_handler(log_file, verbose)
+            _replace_file_handlers(log_file, verbose)
         return
 
     loguru_logger.remove()
@@ -55,12 +60,23 @@ def setup_logging(log_file: str | Path | None = None, verbose: bool = False) -> 
     _configured = True
 
 
+def _replace_file_handlers(log_file: str | Path, verbose: bool = False) -> None:
+    """Убрать прежние файловые sink'и и добавить один актуальный."""
+    for handler_id in list(_file_handler_ids):
+        try:
+            loguru_logger.remove(handler_id)
+        except ValueError:        # sink уже удалён — не критично
+            pass
+    _file_handler_ids.clear()
+    _add_file_handler(log_file, verbose)
+
+
 def _add_file_handler(log_file: str | Path, verbose: bool = False) -> None:
     global _pending_log_file
     try:
         log_file = Path(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        loguru_logger.add(
+        handler_id = loguru_logger.add(
             str(log_file),
             level="DEBUG" if verbose else "INFO",
             format="{time:YYYY-MM-DD HH:mm:ss} [{level:<7}] {name}:{line} {message}",
@@ -68,6 +84,7 @@ def _add_file_handler(log_file: str | Path, verbose: bool = False) -> None:
             retention="5 days",
             encoding="utf-8",
         )
+        _file_handler_ids.append(handler_id)
         _pending_log_file = None
     except (OSError, PermissionError) as e:
         try:
@@ -94,7 +111,6 @@ def get_log_dir() -> Path:
 
 def get_logger(name: str | None = None) -> Any:
     """Вернуть логгер с именем модуля."""
-    global _configured, _pending_log_file
     if not _configured:
         default_log_file = get_log_dir() / "crawl.log"
         setup_logging(default_log_file)

@@ -4,7 +4,7 @@ sources:
     type: html
     categories: [electronics, pcb, kicad]
 
-  - url: "https://electronics.stackexchange.com/questions/322180"
+  - url: "https://electronics.stackexchange.com/questions/1"
     type: stackexchange
     categories: [electronics, q_and_a]
 
@@ -15,6 +15,8 @@ sources:
 
 output:
   corpus_file: "corpus_output/raw_corpus.jsonl"
+  contact_email: ""          # вежливый контакт для Crossref/Wikipedia
+  respect_robots_txt: true
   download_dir: "downloaded_files"
   error_log: "corpus_output/errors.jsonl"
   state_file: "corpus_output/state.json"

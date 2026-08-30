@@ -1,20 +1,23 @@
 """HTTP/2 клиент через httpx."""
+
+# Статус: НЕ подключён к основному краулингу (см. README, раздел
+# «Production notes»). Модуль оставлен как experimental-заделка;
+# реальный HTTP-слой — requests + пул/ретраи (robots.make_session),
+# кэш (http_cache) и соблюдение robots/rate-limit в pipeline.
+
+
 from __future__ import annotations
 
-from typing import Any
-
 from .logging_setup import get_logger
-from .models import AppConfig
 
 log = get_logger(__name__)
 
 
 def is_httpx_available() -> bool:
-    try:
-        import httpx
-        return True
-    except ImportError:
-        return False
+    """Установлен ли httpx (без импорта тяжёлого модуля)."""
+    import importlib.util
+
+    return importlib.util.find_spec("httpx") is not None
 
 
 def make_httpx_client(config, sync=False, http2=True, follow_redirects=True, timeout=None):

@@ -13,18 +13,30 @@
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
-    QLineEdit, QSpinBox, QComboBox, QCheckBox, QMessageBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar, QFileDialog,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from .auto_discover import AutoDiscover
-from .logging_setup import get_logger
 from .gui_improvements import tr
+from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
@@ -391,15 +403,23 @@ class AutoDiscoverDialog(QDialog):
                 url_item = self.results_table.item(row, 0)
                 type_item = self.results_table.item(row, 1)
                 cats_item = self.results_table.item(row, 2)
-                if url_item:
-                    from .config_generator import make_source
-                    url = url_item.text()
-                    if not url.startswith("http"):
-                        url = "https://" + url
-                    cats = []
-                    if cats_item and cats_item.text():
-                        cats = [c.strip() for c in cats_item.text().split(",")]
-                    sources.append(make_source(url, categories=cats or None))
+                if not url_item:
+                    continue
+                from .config_generator import make_source
+                from .models import SOURCE_TYPES
+                url = url_item.text().strip()
+                if not url.startswith("http"):
+                    url = "https://" + url
+                cats = []
+                if cats_item and cats_item.text():
+                    cats = [c.strip() for c in cats_item.text().split(",")]
+                # тип из таблицы обязан сохраняться: иначе вики/arXiv-строки
+                # уезжают в config как «html» и специализированный краулер
+                # никогда не вызывается (C2)
+                stype = (type_item.text().strip() if type_item else "") or None
+                if stype not in SOURCE_TYPES:
+                    stype = None
+                sources.append(make_source(url, stype, categories=cats or None))
 
             discover.save_config(sources, path)
             self.config_path = path

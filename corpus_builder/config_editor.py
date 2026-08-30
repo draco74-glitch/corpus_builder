@@ -9,20 +9,28 @@
 from __future__ import annotations
 
 import os
-import json
-from pathlib import Path
-from typing import Any
 
 import yaml
-from PySide6.QtCore import Qt, Signal, QMimeData
+from PySide6.QtCore import Signal
 from PySide6.QtGui import (
-    QColor, QFont, QDragEnterEvent, QDropEvent, QTextCursor, QSyntaxHighlighter,
-    QTextCharFormat, QPalette,
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QSyntaxHighlighter,
+    QTextCharFormat,
 )
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QTextEdit,
-    QFileDialog, QMessageBox, QComboBox, QGroupBox, QSplitter, QTabWidget,
-    QListWidget, QListWidgetItem, QInputDialog, QApplication,
+    QComboBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .logging_setup import get_logger
@@ -146,9 +154,7 @@ class YamlHighlighter(QSyntaxHighlighter):
                     # Определяем тип значения
                     if value.startswith('"') or value.startswith("'"):
                         self.setFormat(start, len(value), self.string_format)
-                    elif value.lower() in ("true", "false", "null", "none"):
-                        self.setFormat(start, len(value), self.number_format)
-                    elif value.replace(".", "").replace("-", "").replace("+", "").isdigit():
+                    elif value.lower() in ("true", "false", "null", "none") or value.replace(".", "").replace("-", "").replace("+", "").isdigit():
                         self.setFormat(start, len(value), self.number_format)
 
         # --- разделитель документов
@@ -356,7 +362,7 @@ class AdvancedConfigEditor(QWidget):
     def _on_file_dropped(self, path: str) -> None:
         """При drop Excel-файла — конвертируем его в YAML и подставляем в редактор."""
         try:
-            from .config_generator import from_excel, build_config_to_dict
+            from .config_generator import build_config_to_dict, from_excel
             rows = from_excel(path)
             # Конвертируем в sources для YAML
             sources = [

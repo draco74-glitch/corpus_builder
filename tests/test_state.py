@@ -1,6 +1,5 @@
 """Тесты на State."""
 import json
-import os
 
 from corpus_builder.state import State
 

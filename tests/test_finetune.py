@@ -1,8 +1,8 @@
 """Тесты на fine-tuning модули."""
 import json
-import pytest
 from pathlib import Path
 
+import pytest
 
 # === FormatConverter ===
 
@@ -717,7 +717,7 @@ def test_multi_turn_dialogue_needs_multiple_answers(tmp_path):
 
 def test_prompt_variations_exist_for_all_types():
     """Each task type should have multiple prompt variations."""
-    from corpus_builder.postproc.prompt_variations import PROMPT_VARIATIONS, get_variation_count
+    from corpus_builder.postproc.prompt_variations import get_variation_count
     # Check key types
     for ttype in ["article_summary", "code_explanation", "concept_explanation",
                   "bom_generation", "qa_stackexchange", "faq_qa"]:
@@ -769,8 +769,7 @@ def test_split_dataset_basic(tmp_path):
         })
     infile = tmp_path / "pairs.jsonl"
     with open(infile, "w") as f:
-        for p in pairs:
-            f.write(json.dumps(p) + "\n")
+        f.writelines(json.dumps(p) + "\n" for p in pairs)
 
     out_dir = tmp_path / "splits"
     result = FormatConverter.split_dataset(infile, out_dir, val_ratio=0.1)
@@ -800,8 +799,7 @@ def test_split_dataset_stratified(tmp_path):
         })
     infile = tmp_path / "pairs.jsonl"
     with open(infile, "w") as f:
-        for p in pairs:
-            f.write(json.dumps(p) + "\n")
+        f.writelines(json.dumps(p) + "\n" for p in pairs)
 
     out_dir = tmp_path / "splits"
     result = FormatConverter.split_dataset(infile, out_dir, val_ratio=0.1,
@@ -832,8 +830,7 @@ def test_split_dataset_reproducible(tmp_path):
     pairs = [{"prompt": f"Q{i}", "completion": f"A{i}", "task_type": "qa"} for i in range(50)]
     infile = tmp_path / "pairs.jsonl"
     with open(infile, "w") as f:
-        for p in pairs:
-            f.write(json.dumps(p) + "\n")
+        f.writelines(json.dumps(p) + "\n" for p in pairs)
 
     out1 = tmp_path / "split1"
     out2 = tmp_path / "split2"
@@ -903,8 +900,9 @@ def test_html_report_empty_pairs(tmp_path):
 
 def test_sharegpt_multi_turn_uses_conversation_field():
     """Bug A: ShareGPT export should use 'conversation' field for multi-turn pairs."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {
         "prompt": "User: Q1",
         "completion": "A2",
@@ -934,8 +932,9 @@ def test_sharegpt_multi_turn_uses_conversation_field():
 
 def test_chatml_multi_turn_uses_conversation_field():
     """Bug A: ChatML export should use 'conversation' field for multi-turn pairs."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {
         "prompt": "User: Q1",
         "completion": "A2",
@@ -960,8 +959,9 @@ def test_chatml_multi_turn_uses_conversation_field():
 
 def test_sharegpt_single_turn_still_works_without_conversation():
     """Bug A: Single-turn pairs (no conversation field) should still export correctly."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {"prompt": "Hello", "completion": "Hi there", "task_type": "qa"}
     out = FormatConverter._to_sharegpt(pair["prompt"], pair["completion"], pair)
     result = json.loads(out)
@@ -976,8 +976,9 @@ def test_sharegpt_single_turn_still_works_without_conversation():
 
 def test_multi_turn_prompt_contains_full_conversation(tmp_path):
     """Bug B: prompt field should contain the full conversation (not just first question)."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = (
         "# Test\n\n## Question\n\n"
@@ -1017,7 +1018,7 @@ def test_multi_turn_prompt_contains_full_conversation(tmp_path):
 def test_dedup_preserves_different_multi_turn_conversations():
     """Bug C: Two multi-turn pairs with same prompt+completion but different
     conversations should NOT be deduped."""
-    from corpus_builder.postproc.quality_finetune import dedup_pairs, _pair_hash
+    from corpus_builder.postproc.quality_finetune import _pair_hash, dedup_pairs
     p1 = {
         "prompt": "User: Q1",
         "completion": "A2",
@@ -1111,8 +1112,9 @@ def test_balance_by_type_reproducible_with_seed():
 
 def test_qa_pairs_strips_score_prefix_no_accepted(tmp_path):
     """Bug E: Answer should not contain '(score=N)' prefix when no [ПРИНЯТ]."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = (
         "## Вопрос\n\nWhat is a diode and how does it work in circuits?\n\n"
@@ -1137,8 +1139,9 @@ def test_qa_pairs_strips_score_prefix_no_accepted(tmp_path):
 
 def test_qa_pairs_picks_accepted_over_higher_score(tmp_path):
     """Bug E: Accepted answer should be picked even if it has lower score."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = (
         "## Вопрос\n\nWhat is a capacitor and how does it store energy?\n\n"
@@ -1164,8 +1167,9 @@ def test_qa_pairs_picks_accepted_over_higher_score(tmp_path):
 
 def test_qa_pairs_strips_score_prefix_english(tmp_path):
     """Bug E: English markers should also strip (score=N) prefix."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = (
         "## Question\n\nWhat is an operational amplifier and how does it work?\n\n"
@@ -1190,8 +1194,9 @@ def test_qa_pairs_strips_score_prefix_english(tmp_path):
 
 def test_qa_pairs_without_score_marker(tmp_path):
     """Bug E: Should handle answers without (score=N) marker at all."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     # Old format without (score=N) — some legacy data may have this
     content = (
@@ -1238,8 +1243,9 @@ def test_finetune_window_has_single_on_export():
 
 def test_concept_explanation_no_section_bleed(tmp_path):
     """Bug G: completion should not include content from the next section."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = (
         "# Section 1: Electronics\n\n"
@@ -1266,8 +1272,9 @@ def test_concept_explanation_no_section_bleed(tmp_path):
 
 def test_concept_explanation_single_section(tmp_path):
     """Bug G: single section (no next heading) should work."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = (
         "# Single Section\n\n"
@@ -1286,8 +1293,9 @@ def test_concept_explanation_single_section(tmp_path):
 
 def test_html_report_random_sample_not_biased(tmp_path):
     """Bug H: sample should be random, not just pairs[:500]."""
-    from corpus_builder.postproc.stats_report import generate_html_report
     import re
+
+    from corpus_builder.postproc.stats_report import generate_html_report
     pairs = []
     for i in range(1000):
         pairs.append({"prompt": "Short Q", "completion": "Short A", "task_type": "qa"})
@@ -1311,9 +1319,10 @@ def test_html_report_random_sample_not_biased(tmp_path):
 
 def test_corpus_cache_reads_file_once(tmp_path):
     """Bug I: generate_from_corpus should read the corpus file at most twice."""
+    import json
+
     import corpus_builder.postproc.instruction_generator as mod
     from corpus_builder.postproc.instruction_generator import InstructionGenerator
-    import json
 
     corpus = tmp_path / "corpus.jsonl"
     records = [
@@ -1326,8 +1335,7 @@ def test_corpus_cache_reads_file_once(tmp_path):
          "source_type": "pdf", "source_url": "http://e.com/pdf"},
     ]
     with open(corpus, 'w') as f:
-        for r in records:
-            f.write(json.dumps(r) + "\n")
+        f.writelines(json.dumps(r) + "\n" for r in records)
 
     gen = InstructionGenerator()
     orig_open = mod.open_corpus_reader
@@ -1365,8 +1373,9 @@ def test_corpus_cache_clear():
 
 def test_datasheet_specs_uses_get_prompt(tmp_path):
     """Bug J: TOC fallback should use get_prompt, not hardcoded string."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = "Datasheet content. " * 50
     corpus.write_text(json.dumps({
@@ -1385,8 +1394,9 @@ def test_datasheet_specs_uses_get_prompt(tmp_path):
 
 def test_datasheet_specs_escapes_title(tmp_path):
     """Bug J: title with special chars should not break the prompt."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = "Datasheet content. " * 50
     corpus.write_text(json.dumps({
@@ -1437,8 +1447,9 @@ def test_finetune_worker_calls_set_seed():
 
 def test_bom_no_fallback_for_non_kicad_projects(tmp_path):
     """Bug L: github_repo without KiCad files should NOT produce BOM pairs."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     corpus = tmp_path / "corpus.jsonl"
     content = "This is a README for a project. " * 50
     corpus.write_text(json.dumps({
@@ -1456,8 +1467,9 @@ def test_bom_no_fallback_for_non_kicad_projects(tmp_path):
 
 def test_bom_real_kicad_still_works(tmp_path):
     """Bug L: real KiCad files should still produce BOM pairs."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import json
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     kicad_file = tmp_path / "test.kicad_sch"
     kicad_content = '(lib_id "Device:R")\n(property "Reference" "R1")\n(property "Value" "10k")\n'
     kicad_file.write_text(kicad_content)
@@ -1512,7 +1524,6 @@ def test_token_utils_encoder_loaded_at_import():
 def test_chunker_preserves_code_blocks(tmp_path):
     """Improvement 16: code blocks should not be split mid-block."""
     from corpus_builder.postproc.chunker import chunk_text
-    import re
     # Create text with a code block that would be split without protection
     code = "```python\n" + "x = 1\n" * 200 + "```"  # ~1300 chars
     text = "Intro paragraph. " * 20 + "\n\n" + code + "\n\n" + "Outro. " * 20
@@ -1544,8 +1555,9 @@ def test_chunker_code_block_placeholder_extraction():
 
 def test_chatml_with_system_prompt():
     """Improvement 17: ChatML should support optional system prompt."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {"prompt": "Hello", "completion": "Hi", "task_type": "qa"}
     out = FormatConverter._to_chatml(
         pair["prompt"], pair["completion"], pair,
@@ -1561,8 +1573,9 @@ def test_chatml_with_system_prompt():
 
 def test_chatml_without_system_prompt_still_works():
     """Improvement 17: ChatML without system prompt should work as before."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {"prompt": "Hello", "completion": "Hi", "task_type": "qa"}
     out = FormatConverter._to_chatml(pair["prompt"], pair["completion"], pair)
     result = json.loads(out)
@@ -1573,8 +1586,9 @@ def test_chatml_without_system_prompt_still_works():
 
 def test_convert_with_system_prompt(tmp_path):
     """Improvement 17: convert() should pass system_prompt to chatml."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     infile = tmp_path / "pairs.jsonl"
     infile.write_text(json.dumps({"prompt": "Q", "completion": "A"}) + "\n")
     outfile = tmp_path / "out.jsonl"
@@ -1630,10 +1644,13 @@ def test_semantic_dedup_empty():
 
 def test_load_custom_prompts_json(tmp_path):
     """Improvement 19: load custom prompts from JSON file."""
-    from corpus_builder.postproc.prompt_variations import (
-        load_custom_prompts, get_variation_count, reset_to_defaults
-    )
     import json
+
+    from corpus_builder.postproc.prompt_variations import (
+        get_variation_count,
+        load_custom_prompts,
+        reset_to_defaults,
+    )
     reset_to_defaults()
     default_count = get_variation_count("article_summary")
     custom_file = tmp_path / "custom.json"
@@ -1658,10 +1675,14 @@ def test_load_custom_prompts_nonexistent():
 
 def test_reset_to_defaults_clears_custom():
     """Improvement 19: reset should remove all custom prompts."""
+    import json
+    import tempfile
+
     from corpus_builder.postproc.prompt_variations import (
-        load_custom_prompts, get_variation_count, reset_to_defaults
+        get_variation_count,
+        load_custom_prompts,
+        reset_to_defaults,
     )
-    import json, tempfile
     reset_to_defaults()
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump({"article_summary": ["Custom: {content}"]}, f)
@@ -1715,8 +1736,9 @@ def test_finetune_worker_accepts_use_token_limits():
 
 def test_follow_up_uses_bridge_terms():
     """Improvement 21: follow-up should mention bridge terms from answers."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import random
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     rng = random.Random(42)
     prev = "An op-amp is a DC-coupled high-gain amplifier with differential input."
     next_ans = "The gain is controlled by negative feedback on the differential input."
@@ -1730,8 +1752,9 @@ def test_follow_up_uses_bridge_terms():
 
 def test_follow_up_fallback_when_no_bridge():
     """Improvement 21: fallback to generic when no bridge terms."""
-    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     import random
+
+    from corpus_builder.postproc.instruction_generator import InstructionGenerator
     rng = random.Random(42)
     prev = "Hello world."
     next_ans = "Goodbye universe."
@@ -1747,8 +1770,9 @@ def test_follow_up_fallback_when_no_bridge():
 
 def test_axolotl_format_single_turn():
     """Improvement 22: Axolotl format should work for single-turn."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {"prompt": "Hello", "completion": "Hi", "task_type": "qa"}
     out = FormatConverter._to_axolotl(pair["prompt"], pair["completion"], pair)
     result = json.loads(out)
@@ -1761,8 +1785,9 @@ def test_axolotl_format_single_turn():
 
 def test_axolotl_format_multi_turn():
     """Improvement 22: Axolotl should use conversation field for multi-turn."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {
         "prompt": "Q1", "completion": "A2",
         "conversation": [
@@ -1781,8 +1806,9 @@ def test_axolotl_format_multi_turn():
 
 def test_axolotl_with_system_prompt():
     """Improvement 22: Axolotl should support system prompt."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {"prompt": "Q", "completion": "A"}
     out = FormatConverter._to_axolotl(pair["prompt"], pair["completion"], pair,
                                       system_prompt="You are an expert.")
@@ -1793,8 +1819,9 @@ def test_axolotl_with_system_prompt():
 
 def test_llama_factory_format_single_turn():
     """Improvement 22: LLaMA-Factory format should work for single-turn."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {"prompt": "Hello", "completion": "Hi", "task_type": "qa"}
     out = FormatConverter._to_llama_factory(pair["prompt"], pair["completion"], pair)
     result = json.loads(out)
@@ -1807,8 +1834,9 @@ def test_llama_factory_format_single_turn():
 
 def test_llama_factory_multi_turn():
     """Improvement 22: LLaMA-Factory should use conversation field."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     pair = {
         "prompt": "Q1", "completion": "A2",
         "conversation": [
@@ -1824,8 +1852,9 @@ def test_llama_factory_multi_turn():
 
 def test_convert_all_includes_new_formats(tmp_path):
     """Improvement 22: convert_all should produce axolotl + llama_factory files."""
-    from corpus_builder.postproc.format_converter import FormatConverter
     import json
+
+    from corpus_builder.postproc.format_converter import FormatConverter
     infile = tmp_path / "pairs.jsonl"
     infile.write_text(json.dumps({"prompt": "Q", "completion": "A"}) + "\n")
     out_dir = tmp_path / "out"
@@ -1844,7 +1873,6 @@ def test_corpus_validation_empty_file(tmp_path):
     """Improvement 14: empty corpus file should produce warning."""
     # We can't easily test the GUI method directly, but we can test the
     # validation logic by simulating it.
-    import json
     corpus = tmp_path / "empty.jsonl"
     corpus.write_text("")  # empty
     # Simulate the validation logic

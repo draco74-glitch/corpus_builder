@@ -14,14 +14,12 @@ Opens in any browser.
 from __future__ import annotations
 
 import html
-import json
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from ..logging_setup import get_logger
-from .token_utils import count_tokens, _detect_lang_simple
+from .token_utils import _detect_lang_simple, count_tokens
 
 log = get_logger(__name__)
 
@@ -217,16 +215,16 @@ def generate_html_report(
     # Language distribution
     if lang_counts:
         lang_data = sorted(lang_counts.items(), key=lambda x: -x[1])
-        sections.append(f'<section><h2>Language distribution</h2>'
-                        f'<table class="data-table"><thead><tr><th>Language</th><th>Count</th><th>%</th></tr></thead><tbody>')
+        sections.append('<section><h2>Language distribution</h2>'
+                        '<table class="data-table"><thead><tr><th>Language</th><th>Count</th><th>%</th></tr></thead><tbody>')
         for lang, cnt in lang_data:
             pct = cnt * 100 / max(len(sample), 1)
             sections.append(f'<tr><td>{_escape(lang)}</td><td>{cnt}</td><td>{pct:.1f}%</td></tr>')
         sections.append('</tbody></table></section>')
 
     # Detailed type breakdown table
-    sections.append(f'<section><h2>Detailed breakdown by type</h2>'
-                    f'<table class="data-table"><thead><tr><th>Task type</th><th>Count</th><th>% of total</th><th>Avg prompt chars</th><th>Avg completion chars</th></tr></thead><tbody>')
+    sections.append('<section><h2>Detailed breakdown by type</h2>'
+                    '<table class="data-table"><thead><tr><th>Task type</th><th>Count</th><th>% of total</th><th>Avg prompt chars</th><th>Avg completion chars</th></tr></thead><tbody>')
     type_avg: dict[str, dict[str, float]] = {}
     for p in sample:
         t = p.get("task_type", "unknown")
@@ -246,8 +244,8 @@ def generate_html_report(
     # Pipeline stages (if stats provided)
     if stats and stats.get("stage_counts"):
         stage_counts = stats["stage_counts"]
-        sections.append(f'<section><h2>Pipeline stages</h2>'
-                        f'<table class="data-table"><thead><tr><th>Stage</th><th>Total</th></tr></thead><tbody>')
+        sections.append('<section><h2>Pipeline stages</h2>'
+                        '<table class="data-table"><thead><tr><th>Stage</th><th>Total</th></tr></thead><tbody>')
         for stage, sc in stage_counts.items():
             sections.append(f'<tr><td>{_escape(stage)}</td><td>{sum(sc.values())}</td></tr>')
         sections.append('</tbody></table></section>')

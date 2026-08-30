@@ -1,5 +1,4 @@
 """Тесты на защиту от видеопотоков (зависание краулинга)."""
-import pytest
 
 
 def test_blocked_video_extensions():

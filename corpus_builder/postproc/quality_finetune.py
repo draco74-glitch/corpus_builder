@@ -1,11 +1,9 @@
 """Фильтры качества для fine-tuning пар."""
 from __future__ import annotations
+
 import hashlib
 import json
 import re
-from collections import Counter
-
-from .token_utils import count_tokens
 
 
 def passes_finetune_quality(pair: dict, min_prompt: int = 20, max_prompt: int = 8000,
@@ -216,8 +214,7 @@ def _minhash_signature(shingles: set[str], num_perm: int = 128, seed: int = 42) 
         min_hash = float('inf')
         for shingle in shingles:
             h = int(hashlib.sha1(f"{i}:{shingle}".encode()).hexdigest(), 16)
-            if h < min_hash:
-                min_hash = h
+            min_hash = min(min_hash, h)
         signature.append(min_hash)
     return signature
 

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
 
 from ..logging_setup import get_logger
 from ..models import QualityConfig
-from ..text_utils import detect_language, estimate_quality, normalize_text
-from ..quality_filters import evaluate_quality, load_kenlm_model, detect_language_fasttext
+from ..quality_filters import evaluate_quality, load_kenlm_model
+from ..text_utils import detect_language, normalize_text
 
 log = get_logger(__name__)
 
@@ -23,9 +22,11 @@ def passes_quality(text: str, cfg: QualityConfig) -> tuple[bool, dict]:
       - спам-фильтр
       - code/text ratio
 
-    Возвращает (passed, metrics).
+    Возвращает (passed, metrics). В `metrics["rejection_reasons"]` — полный
+    список причин отбраковки (см. C1: раньше причину пересчитывали на месте
+    и она уходила в "unknown").
     """
-    # Используем расширенный оценщик
+    # копия, чтобы не мутировать разделяемый объект конфигурации
     languages_allowed = list(cfg.languages_allowed)
     if cfg.language == "bilingual":
         languages_allowed.append("mixed")
@@ -36,12 +37,12 @@ def passes_quality(text: str, cfg: QualityConfig) -> tuple[bool, dict]:
         max_chars=cfg.max_chars,
         max_non_alpha_ratio=cfg.max_non_alpha_ratio,
         max_dup_line_ratio=cfg.max_dup_line_ratio,
-        max_code_ratio=getattr(cfg, "max_code_ratio", 0.50),
-        max_perplexity=getattr(cfg, "max_perplexity", 1000.0),
-        spam_check=getattr(cfg, "spam_check", True),
+        max_code_ratio=cfg.max_code_ratio,
+        max_perplexity=cfg.max_perplexity,
+        spam_check=cfg.spam_check,
         language_check=cfg.language != "multi",
         languages_allowed=languages_allowed,
-        perplexity_check=getattr(cfg, "perplexity_check", False),
+        perplexity_check=cfg.perplexity_check,
     )
 
     metrics = result["metrics"]
@@ -56,9 +57,10 @@ def passes_quality(text: str, cfg: QualityConfig) -> tuple[bool, dict]:
         + 0.25 * metrics["alpha_ratio"]
         + 0.15 * (1 - metrics["dup_line_ratio"])
         + 0.10 * (1 - metrics.get("code_ratio", 0.0))
-        + 0.10 * (1.0 if metrics.get("language") in (cfg.languages_allowed + ["mixed"]) else 0.0)
+        + 0.10 * (1.0 if metrics.get("language") in languages_allowed else 0.0)
     )
     metrics["quality_score"] = round(score, 3)
+    metrics["rejection_reasons"] = list(result["rejection_reasons"])
     return result["passed"], metrics
 
 
@@ -97,6 +99,7 @@ def run_quality_filter(
             total += 1
 
             if r.get("is_duplicate"):
+                rejected["duplicate"] = rejected.get("duplicate", 0) + 1
                 continue
             if r.get("status") != "ok":
                 rejected["status_error"] = rejected.get("status_error", 0) + 1
@@ -105,25 +108,10 @@ def run_quality_filter(
             text = normalize_text(r.get("content") or "")
             passed, metrics = passes_quality(text, config)
             if not passed:
-                # Определяем причину отклонения
-                reason = "unknown"
-                if metrics["chars"] < config.min_chars:
-                    reason = "too_short"
-                elif metrics["chars"] > config.max_chars:
-                    reason = "too_long"
-                elif metrics["alpha_ratio"] < (1 - config.max_non_alpha_ratio):
-                    reason = "low_alpha"
-                elif metrics["dup_line_ratio"] > config.max_dup_line_ratio:
-                    reason = "too_many_dup_lines"
-                elif metrics.get("code_ratio", 0) > getattr(config, "max_code_ratio", 0.50):
-                    reason = "too_much_code"
-                elif config.language != "multi" and metrics.get("language") not in (
-                    config.languages_allowed + ["mixed"] if config.language == "bilingual" else []
-                ):
-                    reason = f"wrong_language:{metrics.get('language')}"
-                elif metrics.get("perplexity") and metrics.get("perplexity", 0) > getattr(config, "max_perplexity", 1000):
-                    reason = "high_perplexity"
-                rejected[reason] = rejected.get(reason, 0) + 1
+                # Причины приходят из evaluate_quality — не пересочиняем их здесь
+                # (раньше любая не-перечисленная причина попадала в "unknown").
+                for reason in (metrics.get("rejection_reasons") or ["unknown"]):
+                    rejected[reason] = rejected.get(reason, 0) + 1
                 continue
 
             r["content"] = text

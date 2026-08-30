@@ -4,10 +4,8 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from typing import Iterable
 
 import ftfy
-
 
 # Zero-width и управляющие символы, которые нужно удалить
 _ZWSP_RE = re.compile(r"[\u200B\u200C\u200D\uFEFF\u00A0]")
@@ -72,7 +70,7 @@ def text_sha1(text: str) -> str:
 
 def canonical_url(url: str) -> str:
     """Канонизация URL: убрать utm_*, отсортировать query, убрать фрагмент."""
-    from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
     parsed = urlparse(url)
     # Фильтруем utm_* параметры и сортируем query для стабильности
@@ -80,6 +78,44 @@ def canonical_url(url: str) -> str:
     qs.sort()
     new_query = urlencode(qs)
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, ""))
+
+
+def extension_of(url_or_path: str) -> str:
+    """Расширение файла из URL/пути, без query и fragment ('a.PDF?x#y' → 'pdf').
+
+    Используется краулерами: старый инлайн-разбор `s.rsplit('.', 1)[-1].split('?')`
+    не резал `#fragment`, из-за чего `report.pdf#page=2` не скачивался.
+    """
+    from urllib.parse import urlparse
+
+    path = urlparse(url_or_path).path if "://" in url_or_path else url_or_path
+    tail = path.rsplit("/", 1)[-1]
+    return tail.rsplit(".", 1)[-1].lower() if "." in tail else ""
+
+
+def matches_patterns(path: str, patterns: list[str] | None) -> bool:
+    """Проверить путь/URL списком glob-паттернов (`*.md`, `docs/**`, `README*`).
+
+    Паттерн без `*`/`?` считается подстрокой — так работают «расширения»
+    (`".md"`), префиксы каталогов (`"docs/"`) и простые имена файлов, которые
+    люди пишут в config.yaml.
+    """
+    import fnmatch
+
+    if not patterns:
+        return True
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    for p in patterns:
+        pat = p.strip()
+        if not pat:
+            continue
+        if pat in path:                       # подстрока: ".md", "docs/", "README"
+            return True
+        if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(path, pat):
+            return True
+        if fnmatch.fnmatch(name, f"*{pat}*") and ("*" in pat or "?" in pat):
+            return True
+    return False
 
 
 def shingles(text: str, k: int = 5) -> set[str]:
