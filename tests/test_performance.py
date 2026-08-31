@@ -258,7 +258,6 @@ def test_lazy_crawler_import():
     from corpus_builder.crawlers import _imported_cache, list_known_types
     # Сбрасываем кэш
     _imported_cache.clear()
-    cfg = None  # не используется в этом тесте напрямую
     known = list_known_types()
     assert "html" in known
     assert "pdf" in known

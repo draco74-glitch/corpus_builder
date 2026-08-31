@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 from pathlib import Path
 
 import pytest
@@ -336,61 +338,114 @@ def test_i2_build_crawl_context_uses_cached_session(tmp_path):
 # I4/I5 — настройки приложения действительно доходят до движка
 # ============================================================
 
-def _all_settings_fields(settings: AppSettings):
-    from dataclasses import fields, is_dataclass
-    out = {}
-    for f in fields(settings):
-        section = getattr(settings, f.name)
-        if is_dataclass(section):
-            for sub in fields(section):
-                out[f"{f.name}.{sub.name}"] = sub
-    return out
-
-
-#: настройки, которые влияют только на GUI/хранение и не имеют аналога в движке
-GUI_ONLY_SETTINGS = {
-    "gui.theme", "gui.log_level", "gui.show_progress_bar", "gui.window_width",
-    "gui.window_height", "gui.language", "gui.last_config_path",
-    "gui.last_output_dir", "gui.last_excel_path", "gui.recent_configs",
-    "gui.check_updates_on_start",
-    "github.token", "stackexchange.api_key",       # уходят в переменные окружения
-    "crawl.proxy_list",                            #_corpus_builder_proxies
-    "dedup.incremental_score_threshold",
-    "stackexchange.min_score", "stackexchange.max_questions",
-    "gui.ui_overridden",           # служебный список, читается apply_to_config
-    "gui.override_mode",           # режим приоритета, читается apply_to_config
-    "gui.override_migrated",       # флаг миграции легаси-файла настроек
+#: поля движка, которых в диалоге настроек сознательно нет (В6): у них либо есть
+#: своё место (вкладка fine-tuning, пути прогона в config.yaml), либо они слишком
+#: тонкие для общей настройки. Список закрыт тестом — «забыли чекбокс» перестаёт
+#: быть невидимым багом.
+NOT_IN_DIALOG = {
+    "output.corpus_file", "output.download_dir", "output.state_file",
+    "output.error_log", "output.log_file",                 # пути прогона
+    "output.robots_fail_open",                             # только YAML
+    "pipeline.resume", "pipeline.parallel_workers",        # 0 = «авто»
+    "crawlers.html.max_html_pages", "crawlers.github.issues_comments_max",
+    "crawlers.github.max_archive_mb", "crawlers.github.include_files",
+    "crawlers.github.token_env", "crawlers.stackexchange.api_key_env",
+    "crawlers.pdf.schematic_keywords", "crawlers.pdf.two_column_x_threshold",    "dedup.incremental_index_file", "dedup.incremental_score_threshold",
+    "export.keep_intermediate",
+    "finetune.max_per_type", "finetune.min_prompt_chars", "finetune.max_prompt_chars",
+    "finetune.min_completion_chars", "finetune.max_completion_chars",
+    "finetune.balance_classes", "finetune.remove_pii", "finetune.pii_aggressive",
+    "finetune.formats",
 }
 
 
-def test_i4_every_setting_reaches_the_engine():
-    """Каждая настройка диалога имеет потребителя в движке (и наоборот).
+def _engine_leaf_paths() -> set[str]:
+    """Пути всех leaf-полей настроек движка (секции — не листья)."""
+    from corpus_builder.models import GuiEngineConfig
 
-    Проверяется таблица соответствия AppSettings.mapping(): чекбокс в диалоге,
-    который никуда не передаётся, — обещание, которое программа не выполняет.
+    out: set[str] = set()
+
+    def walk(node, prefix: str) -> None:
+        for name in type(node).model_fields:
+            path = f"{prefix}.{name}" if prefix else name
+            value = getattr(node, name)
+            if hasattr(type(value), "model_fields"):
+                walk(value, path)
+            else:
+                out.add(path)
+
+    walk(GuiEngineConfig(), "")
+    return out
+
+
+def _all_setting_paths() -> set[str]:
+    """Вселенная путей настроек: движок + UI + секреты (то, чему есть виджеты)."""
+    from corpus_builder.app_settings import SecretSettings, UiSettings
+
+    out = set(_engine_leaf_paths())
+    for holder, prefix in ((UiSettings(), "ui"), (SecretSettings(), "secrets")):
+        out |= {f"{prefix}.{name}" for name in type(holder).model_fields}
+    return out
+
+
+def test_i4_dialog_bindings_are_real_paths():
+    """Каждая привязка диалога — существующий путь настроек и существующий виджет.
+
+    Раньше соответствия «настройка GUI → поле движка» жили отдельной таблицей, и
+    чекбокс, который никуда не передаётся, был обычным делом. После В3 диалог
+    говорит на языке AppConfig — тест проверяет, что язык не выдуман.
     """
-    assert callable(AppSettings.mapping), "AppSettings.mapping() исчезла"
-    pairs = AppSettings().mapping()
-    assert pairs, "пустая таблица соответствия"
-    srcs = {sp for sp, _ in pairs}
-    dsts = [cp for _, cp in pairs]
-    assert len(dsts) == len(set(dsts)), f"в таблицe дублирующиеся цели: {dsts}"
+    from corpus_builder import settings_dialog
 
-    all_fields = set(_all_settings_fields(AppSettings()))
-    unaddressed = all_fields - srcs - GUI_ONLY_SETTINGS
-    assert not unaddressed, f"настройки без потребителя в движке: {sorted(unaddressed)}"
+    bindings = settings_dialog.SETTING_BINDINGS
+    assert bindings, "пустая таблица привязок"
+    paths = [p for p, _w, _k in bindings]
+    assert len(paths) == len(set(paths)), f"дубли путей: {paths}"
 
-    # цели обязаны существовать в AppConfig
-    from corpus_builder.models import AppConfig
-    cfg = AppConfig(sources=[{"url": "http://x", "type": "html"}],
-                    output={"corpus_file": "a.jsonl", "download_dir": "d"})
-    for cp in dsts:
-        if cp.startswith("gui."):
-            continue
-        obj = cfg
-        for part in cp.split(".")[:-1]:
-            obj = getattr(obj, part)
-        assert hasattr(obj, cp.split(".")[-1]), f"нет поля {cp} в AppConfig"
+    s = AppSettings()
+    problems = []
+    # виджеты создаются в методах сборки вкладок — проверяем исходник, а не класс
+    source = pathlib.Path(settings_dialog.__file__).read_text(encoding="utf-8")
+    created = set(re.findall(r"self\.(\w+) = Q\w+\(", source))
+    for path, widget, _kind in bindings:
+        if s.get(path, "__нет_такого__") == "__нет_такого__":
+            problems.append(f"{path}: такого пути настроек нет")
+        if widget not in created:
+            problems.append(f"{widget}: виджет нигде не создаётся")
+    assert not problems, "кривые привязки: " + "; ".join(problems)
+
+
+def test_i4_every_engine_field_is_bound_or_declared_absent():
+    """Поле движка не может потеряться для диалога молча (В3, В6)."""
+    from corpus_builder import settings_dialog
+
+    engine_paths = _engine_leaf_paths()
+    bound = {p for p, _w, _k in settings_dialog.SETTING_BINDINGS}
+    missing = engine_paths - bound - NOT_IN_DIALOG
+    assert not missing, f"поля движка без чекбокса и без объяснения: {sorted(missing)}"
+    stale = {p for p in NOT_IN_DIALOG if p not in engine_paths}
+    assert not stale, f"список «не в диалоге» устарел: {sorted(stale)}"
+    ghost = {p for p in bound if p not in _all_setting_paths()}
+    assert not ghost, f"привязки к несуществующим полям: {sorted(ghost)}"
+
+
+def test_i4_widget_kind_matches_field_type():
+    """Спиннер на bool или текст на списке = тихо сломанный чекбокс (В3)."""
+    from corpus_builder import settings_dialog
+
+    s = AppSettings()
+    bad = []
+    for path, _widget, kind in settings_dialog.SETTING_BINDINGS:
+        value = s.get(path)
+        if kind == "check" and not isinstance(value, bool):
+            bad.append((path, "флажок на не-bool"))
+        if kind == "spin" and not isinstance(value, (int, float)):
+            bad.append((path, "спиннер на не-число"))
+        if kind in ("text", "plain", "combo_text") and isinstance(value, bool):
+            bad.append((path, "текстовый виджет на bool"))
+        if kind == "csv_text" and not isinstance(value, list):
+            bad.append((path, "csv-виджет на не-список"))
+    assert not bad, f"привязки не по типу: {bad}"
 
 
 def test_c1_yaml_survives_untouched_settings(tmp_path):
@@ -403,49 +458,70 @@ def test_c1_yaml_survives_untouched_settings(tmp_path):
     cfg.pipeline.per_url_timeout_minutes = 60
     before = (cfg.output.request_delay, cfg.quality.min_chars,
               cfg.pipeline.per_url_timeout_minutes)
-    AppSettings().apply_to_config(cfg)          # чистый снимок настроек
+    assert AppSettings().apply_to_config(cfg) == []   # чистые настройки — пустой пролог
     assert (cfg.output.request_delay, cfg.quality.min_chars,
             cfg.pipeline.per_url_timeout_minutes) == before, \
         "значения из config.yaml перезаписаны дефолтами GUI"
 
-    # явно заданное — перекрывает, «*» — как раньше, всё
+    # явно заданное перекрывает, всё остальное файл держит сам
     s = AppSettings()
-    s.quality.min_chars = 123
-    s.apply_to_config(cfg)
+    s.set("quality.min_chars", 123)
+    assert s.apply_to_config(cfg) == ["quality.min_chars"]
     assert cfg.quality.min_chars == 123
-    s2 = AppSettings()
-    s2.gui.ui_overridden = ["*"]
-    s2.apply_to_config(cfg)
-    assert cfg.quality.min_chars == s2.quality.min_chars
+    assert cfg.output.request_delay == 0.2, "не тронутое поле перезаписано"
 
 
 def test_c1_apply_all_mode_unchanged_for_legacy_users():
-    """«*» в ui_overridden = легаси-поведение: накладываются все поля."""
+    """Режим «all» = прежнее поведение: накладывается всё, включая дефолты."""
     from corpus_builder.models import AppConfig
     cfg = AppConfig(sources=[{"url": "http://x", "type": "html"}],
                     output={"corpus_file": "a.jsonl", "download_dir": "d",
                             "request_delay": 9.5})
     s = AppSettings()
-    s.gui.ui_overridden = ["*"]
+    s.ui.override_mode = "all"
     applied = s.apply_to_config(cfg)
     assert "output.request_delay" in applied
-    assert cfg.output.request_delay == s.crawl.request_delay
+    assert cfg.output.request_delay == s.get("output.request_delay")
+
+
+def test_c1_mode_file_wins_over_settings():
+    """«file»: настройки GUI не перекрывают конфиг вовсе (переключатель в диалоге)."""
+    from corpus_builder.models import AppConfig
+    cfg = AppConfig(sources=[{"url": "http://x", "type": "html"}],
+                    output={"corpus_file": "a.jsonl", "download_dir": "d",
+                            "request_delay": 9.5})
+    s = AppSettings()
+    s.set("output.request_delay", 0.0)
+    s.ui.override_mode = "file"
+    assert s.apply_to_config(cfg) == []
+    assert cfg.output.request_delay == 9.5
 
 
 @pytest.mark.parametrize("value,expected", [
-    ("ten", 10),            # мусор → default, а не «ten» внутри ранa
-    ("7", 7),               # числовая строка из JSON приводится
-    (True, 1),
+    ("7", 7.0),             # числовая строка из JSON приводится (валидирует pydantic)
+    (15, 15.0),
+    (0.5, 0.5),
 ])
 def test_i5_settings_import_coerces_types(value, expected):
-    s = AppSettings._from_dict({"crawl": {"per_url_timeout_minutes": value}})
-    assert s.crawl.per_url_timeout_minutes == expected
+    """Файл настроек читается моделями движка — те же правила приведения (В3)."""
+    s = AppSettings.from_dict({"format": 2,
+                               "engine": {"pipeline": {"per_url_timeout_minutes": value}}})
+    assert s.get("pipeline.per_url_timeout_minutes") == expected
+    assert s.changed() == {"pipeline.per_url_timeout_minutes"}
+
+
+def test_i5_garbage_in_new_settings_file_does_not_reach_the_run():
+    """«ten» в v2-файле не делает поле «заданным» — оно остаётся дефолтом."""
+    s = AppSettings.from_dict({"format": 2,
+                               "engine": {"pipeline": {"per_url_timeout_minutes": "ten"}}})
+    assert s.get("pipeline.per_url_timeout_minutes") == 10.0
+    assert s.changed() == set()
 
 
 def test_i5_poisoned_settings_cannot_reach_engine():
-    s = AppSettings._from_dict({"crawl": {"request_timeout": "abc"}})
+    s = AppSettings.from_dict({"crawl": {"request_timeout": "abc"}})   # миграция v1
     cfg = _make_cfg(Path("/tmp"), ["http://x"])
-    s.apply_to_config(cfg)                 # не должно бросать
+    assert s.apply_to_config(cfg) == []        # битое поле не легло в прогон
     assert isinstance(cfg.output.request_timeout, int)
     with pytest.raises(Exception):
         cfg.pipeline.per_url_timeout_minutes = "ten"   # validate_assignment

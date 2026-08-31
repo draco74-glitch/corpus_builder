@@ -1387,9 +1387,9 @@ class FirstRunWizard(QWizard):
 
         # Токены
         if self.edit_github_token.text():
-            self.settings.github.token = self.edit_github_token.text()
+            self.settings.secrets.github_token = self.edit_github_token.text()
         if self.edit_se_key.text():
-            self.settings.stackexchange.api_key = self.edit_se_key.text()
+            self.settings.secrets.stackexchange_api_key = self.edit_se_key.text()
 
         self.settings.save()
         self.settings.setup_env_vars()
@@ -1685,6 +1685,13 @@ TRANSLATIONS = {
         "st_dedup_minhash": "Нечёткая дедупликация (MinHash LSH)",
         "st_dedup_images": "Дедупликация изображений (sha1)",
         "st_presets": "Пресеты",
+        "st_reset_overrides": "Взять из config.yaml",
+        "st_reset_overrides_hint": ("Снять с настроек отметку «задано в GUI»: после "
+                                    "этого значения берутся из config.yaml (или из "
+                                    "значений по умолчанию движка), а сами виджеты "
+                                    "остаются на месте — можно сохранить их снова."),
+        "st_reset_overrides_done": "Снято перекрытий: {n}.",
+        "st_reset_none": "Перекрытий config.yaml нет — настройки и так не задавали.",
         "st_preset_hint": ("Встроенные профили закрывают частые сценарии; «Сохранить "
                            "как…» кладёт текущие настройки в свой пресет. Применение "
                            "пресета помечает его поля изменёнными, поэтому они честно "
@@ -2075,6 +2082,12 @@ TRANSLATIONS = {
         "st_dedup_minhash": "Fuzzy deduplication (MinHash LSH)",
         "st_dedup_images": "Image deduplication (sha1)",
         "st_presets": "Presets",
+        "st_reset_overrides": "Take from config.yaml",
+        "st_reset_overrides_hint": ("Clear the “set in GUI” mark on all fields: values "
+                                    "then come from config.yaml (or engine defaults); "
+                                    "widgets stay where they are, so you can set them again."),
+        "st_reset_overrides_done": "Overrides cleared: {n}.",
+        "st_reset_none": "Nothing overrides config.yaml right now.",
         "st_preset_hint": ("Built-in profiles cover common scenarios; “Save as…” stores "
                            "your current settings as a personal preset. Applying a preset "
                            "marks its fields as changed, so they override config.yaml in "

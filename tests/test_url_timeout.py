@@ -67,10 +67,15 @@ def test_pipeline_config_has_timeout():
     assert cfg.per_url_timeout_minutes == 10  # default
 
 
-def test_crawl_settings_has_timeout():
-    """CrawlSettings содержит per_url_timeout_minutes."""
-    from corpus_builder.app_settings import CrawlSettings
+def test_settings_have_the_same_timeout_field_as_the_engine():
+    """Настройка таймаута — путь AppConfig: отдельного списка полей больше нет (В3)."""
+    from corpus_builder.app_settings import AppSettings
+    from corpus_builder.models import AppConfig, PipelineConfig, SourceItem
 
-    s = CrawlSettings()
-    assert hasattr(s, "per_url_timeout_minutes")
-    assert s.per_url_timeout_minutes == 10  # default
+    s = AppSettings()
+    assert s.get("pipeline.per_url_timeout_minutes") == PipelineConfig().per_url_timeout_minutes
+    s.set("pipeline.per_url_timeout_minutes", 0.25)
+    cfg = AppConfig(sources=[SourceItem(url="http://x", type="html")],
+                    output={"corpus_file": "a.jsonl", "download_dir": "d"})
+    assert s.apply_to_config(cfg) == ["pipeline.per_url_timeout_minutes"]
+    assert cfg.pipeline.per_url_timeout_minutes == 0.25

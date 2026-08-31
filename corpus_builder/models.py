@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 # Единственный источник истины по типам источников.
 # Любое изменение здесь должно совпадать с реестром `crawlers.REGISTRY`
@@ -232,6 +232,14 @@ class FineTuneConfig(_ValidatingModel):
 
 
 class AppConfig(_ValidatingModel):
+    #: значения, которые были в YAML-файле по-настоящему (заполняет
+    #`config.load_config). Нужны индикатору «чем перекрыли»: после наложения
+    #: настроек на этот же объект fields_set врёт, а файл надо показать как есть.
+    _from_file: dict = PrivateAttr(default_factory=dict)
+
+    def values_from_file(self) -> dict:
+        return dict(self._from_file)
+
     sources: list[SourceItem]
     output: OutputConfig
     crawlers: CrawlersConfig = Field(default_factory=CrawlersConfig)
@@ -277,3 +285,70 @@ class ErrorRecord(_ValidatingModel):
     source_type: str
     reason: str
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+# ---------- Настройки приложения (В3) — одни и те же модели с AppConfig ----------
+
+class OutputSettings(OutputConfig):
+    """`OutputConfig` без обязательных путей.
+
+    Пути (`corpus_file`, `download_dir`) принадлежат конкретному run-конфигу,
+    а не глобальным настройкам GUI: в них нет смысла «на все проекты». Всё
+    остальное — те же поля, та же валидация, те же дефолты, что у движка:
+    второго списка настроек больше нет (В3).
+    """
+    corpus_file: str = ""
+    download_dir: str = ""
+
+
+class GuiEngineConfig(_ValidatingModel):
+    """Значения движка, заданные в диалоге настроек.
+
+    Повторно объявлять поля не нужно: секции — те же классы, что у `AppConfig`
+    (и `OutputSettings` для output), поэтому дефолт/тип/диапазон физически не
+    могут разойтись с движком, а «что пользователь менял» — это
+    `model_fields_set`, а не сравнение с дефолтом.
+    """
+    output: OutputSettings = Field(default_factory=OutputSettings)
+    crawlers: CrawlersConfig = Field(default_factory=CrawlersConfig)
+    quality: QualityConfig = Field(default_factory=QualityConfig)
+    dedup: DedupConfig = Field(default_factory=DedupConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    finetune: FineTuneConfig = Field(default_factory=FineTuneConfig)
+    export: ExportConfig = Field(default_factory=ExportConfig)
+
+
+def explicit_paths(model: BaseModel, prefix: str = "") -> set[str]:
+    """Пути leaf-полей, заданных **явно** (а не подставленных дефолтом).
+
+    pydantic ведёт `model_fields_set` на каждой вложенной модели, и важно, что
+    запись `cfg.quality.min_chars = 800` помечает поле внутри `quality`, но НЕ
+    внутри родителя: поэтому дерево обходится целиком, а не только по
+    `model_fields_set` верхнего уровня. Провенанс получается честный и для
+    конфигу из YAML (ключи, реально написанные в файле), и для настроек GUI.
+    """
+    out: set[str] = set()
+    for name in type(model).model_fields:
+        path = name if not prefix else f"{prefix}.{name}"
+        value = getattr(model, name, None)
+        if isinstance(value, BaseModel):
+            out |= explicit_paths(value, path)
+        elif name in model.__pydantic_fields_set__:
+            out.add(path)
+    return out
+
+
+def get_by_path(model: BaseModel, dotted: str) -> Any:
+    obj: Any = model
+    for part in dotted.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def set_by_path(model: BaseModel, dotted: str, value: Any) -> None:
+    """Значение по пути с валидацией типов (модели наследуют `_ValidatingModel`)."""
+    parts = dotted.split(".")
+    obj: Any = model
+    for part in parts[:-1]:
+        obj = getattr(obj, part)
+    setattr(obj, parts[-1], value)

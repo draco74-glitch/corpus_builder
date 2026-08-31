@@ -48,7 +48,7 @@ def verify_member_path(target_dir: Path, member_name: str,
                        allowed_extensions: tuple[str, ...] = (".py",)) -> Path:
     """Вернуть безопасный путь для элемента архива или поднять UnsafeArchiveEntry.
 
-    Проверяем: не абсолютный, безdrive-letter, без `..`, расширение из
+    Проверяем: не абсолютный, без drive-буквы, без `..`, расширение из
     разрешённого списка, и итоговый resolve()-путь лежит ВНУТРИ target_dir.
     Раньше `_apply_patch` делал `target_dir / rel_path` без любой проверки, и
     член вида `corpus_builder/../../../../evil.py` записывался за пределы

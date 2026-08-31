@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from corpus_builder.app_settings import AppSettings
 from corpus_builder.cli import validate_config_file
 
 BASE = """
@@ -150,9 +151,12 @@ def _gui_export(tmp_path, monkeypatch, answer, token="ghp_supersecret"):
     app = QApplication.instance() or QApplication([])   # noqa: F841 — держим процесс Qt
     window = gui.MainWindow()
     assert app.applicationName() is not None
-    window.app_settings.github.token = token
-    window.app_settings.stackexchange.api_key = "se_secret"
-    monkeypatch.setattr(window.app_settings, "save", lambda: None)
+    window.app_settings.secrets.github_token = token
+    window.app_settings.secrets.stackexchange_api_key = "se_secret"
+    # пиктуть файла настроек в tmp: у pydantic-модели метод нельзя подменить
+    # атрибутом — и это правильно (иначе тест лгал бы о реальном сохранении)
+    isolated = tmp_path / "app_settings.json"
+    monkeypatch.setattr(AppSettings, "_settings_file", classmethod(lambda cls: isolated))
 
     out = tmp_path / "settings.json"
     monkeypatch.setattr(QFileDialog, "getSaveFileName",
@@ -178,13 +182,13 @@ def test_gui_export_hides_tokens_by_default(tmp_path, monkeypatch):
     data, asked, shown = _gui_export(tmp_path, monkeypatch, QMessageBox.StandardButton.No)
     assert asked, "о секретах нужно спросить"
     blob = json.dumps(data)
-    assert "ghp_supersecret" not in blob and "se_secret" not in blob
-    assert data["github"]["token"] == "***redacted***"
+    assert "ghp_supersecret" not in blob and "se_secret" not in blob, "токены ушли в экспорт"
+    assert data["secrets"]["github_token"] == "***redacted***"
     assert any("Скрыты" in s or "hidden" in s.lower() for s in shown), shown
 
 
 def test_gui_export_with_secrets_when_user_confirms(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     data, _, shown = _gui_export(tmp_path, monkeypatch, QMessageBox.StandardButton.Yes)
-    assert data["github"]["token"] == "ghp_supersecret"
+    assert data["secrets"]["github_token"] == "ghp_supersecret"
     assert not any("Скрыты" in s for s in shown)

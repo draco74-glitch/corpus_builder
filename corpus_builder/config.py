@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from .logging_setup import get_logger
-from .models import AppConfig
+from .models import AppConfig, explicit_paths, get_by_path
 
 log = get_logger(__name__)
 
@@ -23,13 +23,16 @@ def load_config(path: str | Path) -> AppConfig:
     if not raw:
         raise ValueError(f"Config file is empty: {path}")
     try:
-        return AppConfig(**raw)
+        cfg = AppConfig(**raw)
     except ValidationError as e:
         log.error("Config validation failed:")
         for err in e.errors():
             loc = ".".join(str(x) for x in err["loc"])
             log.error(f"  - {loc}: {err['msg']}")
         raise
+    # провенанс «что написано в файле» фиксируется до любых наложений (В3)
+    cfg._from_file = {p: get_by_path(cfg, p) for p in explicit_paths(cfg)}
+    return cfg
 
 
 def ensure_output_dirs(config: AppConfig) -> None:

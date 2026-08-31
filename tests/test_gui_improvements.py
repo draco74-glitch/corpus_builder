@@ -25,6 +25,7 @@ def test_splitter_state_saver(tmp_path):
 
     settings_file = tmp_path / "splitter.json"
     saver = SplitterStateSaver(settings_file)
+    assert saver.settings_file == settings_file
 
     # Сохраняем данные напрямую в JSON (имитируя QSplitter.sizes())
     data = {"main": [300, 700]}

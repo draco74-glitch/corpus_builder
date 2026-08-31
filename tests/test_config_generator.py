@@ -281,6 +281,7 @@ def test_from_excel_unsupported_extension(tmp_path):
 def test_save_template_xlsx(tmp_path):
     out = tmp_path / "template.xlsx"
     result = save_template_xlsx(out)
+    assert result, "шаблон не сообщил, что создан"
     assert out.exists()
     assert out.stat().st_size > 0
 

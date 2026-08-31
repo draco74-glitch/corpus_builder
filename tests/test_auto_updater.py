@@ -309,6 +309,7 @@ def test_commit_updater_save_and_load_sha(tmp_path):
     updater = CommitUpdater("owner/repo", "main")
 
     sha_file = tmp_path / "last_commit.txt"
+    assert sha_file.parent == tmp_path
     with mock.patch.object(Path, "write_text"):
         with mock.patch.object(Path, "exists", return_value=True):
             with mock.patch.object(Path, "read_text", return_value="test_sha_123"):

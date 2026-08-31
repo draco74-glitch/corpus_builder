@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .app_settings import AppSettings
+from .app_settings import AppSettings, _split_csv
 from .presets import (all_presets, apply_preset, capture_preset, delete_user_preset,
                       preset_by_key, save_user_preset, validate_preset)
 from .gui_improvements import tr, trl
@@ -61,7 +61,7 @@ BORDER = "#3c3c3c"
 
 #: режимы приоритета над config.yaml (Б); подписи — ключи перевода
 OVERRIDE_MODE_CHOICES = (
-    ("touched", "st_override_touched"),
+    ("changed", "st_override_touched"),
     ("file", "st_override_file"),
     ("all", "st_override_all"),
 )
@@ -86,6 +86,95 @@ AUTO_STREAMING_CHOICES = (
     ("force", "force — всегда стримить (экономия RAM)"),
 )
 
+#: Привязки «путь настройки → виджет»: один список на загрузку и сохранение.
+#: В3: пути — те же, что у `AppConfig` (`quality.min_chars`,
+#: `crawlers.pdf.ocr_enabled`, `output.request_delay`): диалог и движок смотрят
+#: в один объект, поэтому поле не может «исчезнуть по дороге в движок».
+SETTING_BINDINGS: tuple[tuple[str, str, str], ...] = (
+    ("crawlers.github.branch", "edit_github_branch", "text"),
+    ("crawlers.github.crawl_docs_dir", "chk_crawl_docs", "check"),
+    ("crawlers.github.crawl_issues", "chk_crawl_issues", "check"),
+    ("crawlers.github.crawl_issues_max", "spin_issues_max", "spin"),
+    ("crawlers.github.crawl_issues_state", "combo_issues_state", "combo_text"),
+    ("crawlers.github.crawl_wiki", "chk_crawl_wiki", "check"),
+    ("crawlers.github.docs_extensions", "edit_docs_ext", "csv_text"),
+    ("crawlers.github.include_files", "edit_include_files", "csv_text"),
+    ("crawlers.html.download_files_ext", "edit_files_ext", "csv_text"),
+    ("crawlers.html.download_images", "chk_download_images", "check"),
+    ("crawlers.html.extract_mode", "combo_html_mode", "combo_text"),
+    ("crawlers.html.image_extensions", "edit_image_ext", "csv_text"),
+    ("crawlers.pdf.extract_tables", "chk_extract_tables", "check"),
+    ("crawlers.pdf.filter_schematic_images", "chk_filter_schematics", "check"),
+    ("crawlers.pdf.image_min_height", "spin_img_min_height", "spin"),
+    ("crawlers.pdf.image_min_width", "spin_img_min_width", "spin"),
+    ("crawlers.pdf.ocr_enabled", "chk_ocr", "check"),
+    ("crawlers.pdf.ocr_lang", "edit_ocr_lang", "text"),
+    ("crawlers.pdf.ocr_min_chars_per_page", "spin_ocr_min_chars", "spin"),
+    ("crawlers.pdf.ocr_parallel_workers", "spin_ocr_workers", "spin"),
+    ("crawlers.pdf.two_column_detection", "chk_two_column", "check"),
+    ("crawlers.pdf.use_toc_as_structure", "chk_use_toc", "check"),
+    ("crawlers.stackexchange.max_list_questions", "spin_se_max_questions", "spin"),
+    ("crawlers.stackexchange.min_score", "spin_se_min_score", "spin"),
+    ("crawlers.stackexchange.site", "combo_se_site", "combo_text"),
+    ("dedup.auto_streaming", "combo_auto_streaming", "combo_data"),
+    ("dedup.auto_streaming_threshold_mb", "spin_streaming_mb", "spin"),
+    ("dedup.dedup_images", "chk_dedup_images", "check"),
+    ("dedup.exact", "chk_exact", "check"),
+    ("dedup.incremental", "chk_incremental", "check"),
+    ("dedup.minhash", "chk_minhash", "check"),
+    ("dedup.minhash_num_perm", "spin_minhash_perm", "spin"),
+    ("dedup.minhash_threshold", "spin_minhash_threshold", "spin"),
+    ("dedup.streaming", "chk_streaming", "check"),
+    ("export.write_gzip", "chk_gzip", "check"),
+    ("output.cache_ttl_hours", "spin_cache_ttl", "spin"),
+    ("output.contact_email", "edit_contact_email", "text"),
+    ("output.max_file_size_mb", "spin_max_file_size", "spin"),
+    ("output.request_delay", "spin_delay", "spin"),
+    ("output.request_timeout", "spin_timeout", "spin"),
+    ("output.respect_robots_txt", "chk_robots", "check"),
+    ("output.revalidate_cached_files", "chk_revalidate", "check"),
+    ("output.use_browser_headers", "chk_browser_headers", "check"),
+    ("output.use_http_cache", "chk_use_cache", "check"),
+    ("output.use_proxy", "chk_use_proxy", "check"),
+    ("output.user_agent", "edit_user_agent", "text"),
+    ("pipeline.max_concurrent_per_domain", "spin_max_per_domain", "spin"),
+    ("pipeline.max_concurrent_total", "spin_max_concurrent", "spin"),
+    ("pipeline.min_checkpoint_seconds", "spin_min_checkpoint", "spin"),
+    ("pipeline.parallel_postproc", "chk_parallel_postproc", "check"),
+    ("pipeline.parallel_workers", "spin_parallel_workers", "spin"),
+    ("pipeline.per_url_timeout_minutes", "spin_url_timeout", "spin"),
+    ("pipeline.save_checkpoint_every", "spin_checkpoint", "spin"),
+    ("pipeline.use_async", "chk_async", "check"),
+    ("quality.language", "combo_language", "combo_text"),
+    ("quality.languages_allowed", "edit_langs_allowed", "csv_text"),
+    ("quality.max_chars", "spin_max_chars", "spin"),
+    ("quality.max_code_ratio", "spin_max_code", "spin"),
+    ("quality.max_dup_line_ratio", "spin_max_dup_lines", "spin"),
+    ("quality.max_non_alpha_ratio", "spin_max_non_alpha", "spin"),
+    ("quality.max_perplexity", "spin_max_perplexity", "spin"),
+    ("quality.min_chars", "spin_min_chars", "spin"),
+    ("quality.perplexity_check", "chk_perplexity", "check"),
+    ("quality.perplexity_model_path", "edit_perplexity_model", "text"),
+    ("quality.spam_check", "chk_spam", "check"),
+    ("secrets.github_token", "edit_github_token", "text"),
+    ("secrets.proxy_list", "edit_proxy_list", "plain"),
+    ("secrets.stackexchange_api_key", "edit_se_key", "text"),
+    ("ui.last_config_path", "edit_last_config", "text"),
+    ("ui.last_output_dir", "edit_last_output", "text"),
+    ("ui.log_level", "combo_log_level", "combo_text"),
+    ("ui.override_mode", "combo_override_mode", "combo_data"),
+    ("pipeline.progress_bar", "chk_show_progress", "check"),
+    ("ui.theme", "combo_theme", "combo_text"),
+    ("ui.window_height", "spin_window_height", "spin"),
+    ("ui.window_width", "spin_window_width", "spin"),
+)
+
+
+def _is_empty(value) -> bool:
+    """«Не задано» и для виджета, и для модели — одно и то же."""
+    return value is None or value == "" or value == [] or value == ()
+
+
 class SettingsDialog(QDialog):
     """Диалоговое окно настроек с вкладками."""
 
@@ -96,8 +185,6 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self.settings = settings
-        #: Б: снимок «до», чтобы при сохранении отметить только тронутые поля
-        self._open_snapshot = settings.snapshot()
         self.setWindowTitle(tr("settings_title"))
         self.resize(700, 600)
         self._build_ui()
@@ -207,6 +294,12 @@ class SettingsDialog(QDialog):
         self.btn_preset_save.setProperty("secondary", True)
         self.btn_preset_save.clicked.connect(self._on_save_preset)
         preset_row.addWidget(self.btn_preset_save)
+        self.btn_reset_overrides = QPushButton(tr("st_reset_overrides"))
+        self.btn_reset_overrides.setProperty("secondary", True)
+        self.btn_reset_overrides.setToolTip(tr("st_reset_overrides_hint"))
+        self.btn_reset_overrides.clicked.connect(self._on_reset_overrides)
+        preset_row.addWidget(self.btn_reset_overrides)
+
         self.btn_preset_delete = QPushButton(tr("st_preset_delete"))
         self.btn_preset_delete.setProperty("secondary", True)
         self.btn_preset_delete.clicked.connect(self._on_delete_preset)
@@ -454,6 +547,15 @@ class SettingsDialog(QDialog):
         self.spin_issues_max.setRange(1, 500)
         layout.addRow("Макс. Issues/PR:", self.spin_issues_max)
 
+        self.combo_issues_state = QComboBox()
+        self.combo_issues_state.addItems(["all", "open", "closed"])
+        layout.addRow("Состояние Issues:", self.combo_issues_state)
+
+        self.edit_docs_ext = QLineEdit()
+        self.edit_docs_ext.setPlaceholderText(".md, .rst, .txt")
+        self.edit_docs_ext.setToolTip("Расширения файлов из docs/, которые считаем документацией")
+        layout.addRow("Расширения docs/:", self.edit_docs_ext)
+
         self.chk_crawl_wiki = QCheckBox(tr("st_crawl_wiki"))
         layout.addRow(self.chk_crawl_wiki)
 
@@ -700,204 +802,78 @@ class SettingsDialog(QDialog):
     # ============================================================
 
     def _load_values(self) -> None:
-        """Загрузить значения из AppSettings в виджеты."""
-        s = self.settings
-
-        # General
-        self.combo_theme.setCurrentText(s.gui.theme)
-        self.combo_log_level.setCurrentText(s.gui.log_level)
-        self.edit_last_config.setText(s.gui.last_config_path)
-        self.edit_last_output.setText(s.gui.last_output_dir)
-        self.spin_window_width.setValue(s.gui.window_width)
-        self.spin_window_height.setValue(s.gui.window_height)
-
-        # Crawl
-        self.edit_user_agent.setText(s.crawl.user_agent)
-        self.spin_timeout.setValue(s.crawl.request_timeout)
-        self.spin_delay.setValue(s.crawl.request_delay)
-        self.spin_max_file_size.setValue(s.crawl.max_file_size_mb)
-        self.edit_contact_email.setText(s.crawl.contact_email)
-        self.chk_use_cache.setChecked(s.crawl.use_cache)
-        self.edit_contact_email.setText(s.crawl.contact_email)
-        self.chk_revalidate.setChecked(s.crawl.revalidate_cached_files)
-        self.spin_cache_ttl.setValue(s.crawl.cache_ttl_hours)
-        self.chk_robots.setChecked(s.crawl.respect_robots_txt)
-        self.chk_browser_headers.setChecked(s.crawl.use_browser_headers)
-        self.chk_use_proxy.setChecked(s.crawl.use_proxy)
-        self.edit_proxy_list.setPlainText(s.crawl.proxy_list)
-        idx = self.combo_override_mode.findData(s.override_mode())
-        self.combo_override_mode.setCurrentIndex(idx if idx >= 0 else 0)
-        self.spin_checkpoint.setValue(s.crawl.save_checkpoint_every)
-        self.spin_min_checkpoint.setValue(s.crawl.min_checkpoint_seconds)
-        idx = self.combo_auto_streaming.findData(s.dedup.auto_streaming)
-        self.combo_auto_streaming.setCurrentIndex(idx if idx >= 0 else 1)
-        self.spin_streaming_mb.setValue(s.dedup.auto_streaming_threshold_mb)
-
-        # HTML
-        self.combo_html_mode.setCurrentText(s.html.extract_mode)
-        self.chk_download_images.setChecked(s.html.download_images)
-        self.edit_image_ext.setText(s.html.image_extensions)
-        self.edit_files_ext.setText(s.html.download_files_ext)
-
-        # PDF
-        self.chk_ocr.setChecked(s.pdf.ocr_enabled)
-        self.edit_ocr_lang.setText(s.pdf.ocr_lang)
-        self.spin_ocr_min_chars.setValue(s.pdf.ocr_min_chars_per_page)
-        self.spin_ocr_workers.setValue(s.pdf.ocr_parallel_workers)
-        self.spin_img_min_width.setValue(s.pdf.image_min_width)
-        self.spin_img_min_height.setValue(s.pdf.image_min_height)
-        self.chk_extract_tables.setChecked(s.pdf.extract_tables)
-        self.chk_two_column.setChecked(s.pdf.two_column_detection)
-        self.chk_filter_schematics.setChecked(s.pdf.filter_schematic_images)
-        self.chk_use_toc.setChecked(s.pdf.use_toc_as_structure)
-
-        # GitHub
-        self.edit_github_token.setText(s.github.token)
-        self.edit_github_branch.setText(s.github.branch)
-        self.chk_crawl_issues.setChecked(s.github.crawl_issues)
-        self.spin_issues_max.setValue(s.github.crawl_issues_max)
-        self.chk_crawl_wiki.setChecked(s.github.crawl_wiki)
-        self.chk_crawl_docs.setChecked(s.github.crawl_docs_dir)
-        self.edit_include_files.setText(s.github.include_files)
-
-        # StackExchange
-        self.edit_se_key.setText(s.stackexchange.api_key)
-        self.combo_se_site.setCurrentText(s.stackexchange.site)
-        self.spin_se_min_score.setValue(s.stackexchange.min_score)
-        self.spin_se_max_questions.setValue(s.stackexchange.max_questions)
-
-        # Quality
-        self.spin_min_chars.setValue(s.quality.min_chars)
-        self.spin_max_chars.setValue(s.quality.max_chars)
-        self.spin_max_non_alpha.setValue(s.quality.max_non_alpha_ratio)
-        self.spin_max_dup_lines.setValue(s.quality.max_dup_line_ratio)
-        self.spin_max_code.setValue(s.quality.max_code_ratio)
-        self.chk_spam.setChecked(s.quality.spam_check)
-        self.combo_language.setCurrentText(s.quality.language)
-        self.edit_langs_allowed.setText(s.quality.languages_allowed)
-        self.chk_perplexity.setChecked(s.quality.perplexity_check)
-        self.spin_max_perplexity.setValue(s.quality.max_perplexity)
-        self.edit_perplexity_model.setText(s.quality.perplexity_model_path)
-
-        # Dedup
-        self.chk_exact.setChecked(s.dedup.exact)
-        self.chk_minhash.setChecked(s.dedup.minhash)
-        self.spin_minhash_perm.setValue(s.dedup.minhash_num_perm)
-        self.spin_minhash_threshold.setValue(s.dedup.minhash_threshold)
-        self.chk_dedup_images.setChecked(s.dedup.dedup_images)
-        self.chk_streaming.setChecked(s.dedup.use_streaming)
-        self.chk_incremental.setChecked(s.dedup.use_incremental)
-
-        # Performance
-        self.chk_async.setChecked(s.async_crawl.enabled)
-        self.spin_max_concurrent.setValue(s.async_crawl.max_concurrent_total)
-        self.spin_max_per_domain.setValue(s.async_crawl.max_concurrent_per_domain)
-        self.spin_url_timeout.setValue(getattr(s.crawl, 'per_url_timeout_minutes', 10))
-        self.chk_gzip.setChecked(s.export.gzip_output)
-        self.chk_parallel_postproc.setChecked(s.export.parallel_postproc)
-        self.spin_parallel_workers.setValue(s.export.parallel_workers)
-
-        # GUI
-        self.chk_show_progress.setChecked(s.gui.show_progress_bar)
+        """Разложить значения настроек по виджетам (см. SETTING_BINDINGS)."""
+        for path, widget, kind in SETTING_BINDINGS:
+            w = getattr(self, widget)
+            value = self.settings.get(path)
+            if kind == "spin":
+                w.setValue(value)
+            elif kind == "check":
+                w.setChecked(bool(value))
+            elif kind == "combo_text":
+                w.setCurrentText(value or "")
+            elif kind == "combo_data":
+                idx = w.findData(value)
+                w.setCurrentIndex(idx if idx >= 0 else 0)
+            elif kind == "csv_text":
+                w.setText(", ".join(value or []))
+            elif kind == "plain":
+                w.setPlainText(value or "")
+            else:
+                w.setText("" if value is None else str(value))
 
     def _save_values(self) -> None:
-        """Сохранить значения из виджетов в AppSettings."""
-        s = self.settings
+        """Собрать значения из виджетов в настройки.
 
-        # General
-        s.gui.theme = self.combo_theme.currentText()
-        s.gui.log_level = self.combo_log_level.currentText()
-        s.gui.last_config_path = self.edit_last_config.text()
-        s.gui.last_output_dir = self.edit_last_output.text()
-        s.gui.window_width = self.spin_window_width.value()
-        s.gui.window_height = self.spin_window_height.value()
+        Записывается только реально изменившееся (`_set_if_changed`). Иначе любое
+        «Сохранить» сделало бы все ~70 полей явно заданными — и настройки снова
+        начали бы молча перекрывать config.yaml (В1), из-за чего схема и менялась.
+        """
+        for path, widget, kind in SETTING_BINDINGS:
+            w = getattr(self, widget)
+            if kind == "spin":
+                value = w.value()
+            elif kind == "check":
+                value = w.isChecked()
+            elif kind == "combo_text":
+                value = w.currentText()
+            elif kind == "combo_data":
+                value = w.currentData()
+            elif kind == "csv_text":
+                value = _split_csv(w.text())
+            elif kind == "plain":
+                value = w.toPlainText()
+            else:
+                value = w.text()
+            self._set_if_changed(path, value)
 
-        # Crawl
-        s.crawl.user_agent = self.edit_user_agent.text()
-        s.crawl.request_timeout = self.spin_timeout.value()
-        s.crawl.request_delay = self.spin_delay.value()
-        s.crawl.max_file_size_mb = self.spin_max_file_size.value()
-        s.crawl.use_cache = self.chk_use_cache.isChecked()
-        s.crawl.revalidate_cached_files = self.chk_revalidate.isChecked()
-        s.crawl.cache_ttl_hours = self.spin_cache_ttl.value()
-        s.crawl.respect_robots_txt = self.chk_robots.isChecked()
-        s.crawl.use_browser_headers = self.chk_browser_headers.isChecked()
-        s.crawl.use_proxy = self.chk_use_proxy.isChecked()
-        s.crawl.proxy_list = self.edit_proxy_list.toPlainText()
-        s.crawl.contact_email = self.edit_contact_email.text().strip()
-        s.crawl.contact_email = self.edit_contact_email.text().strip()
-        s.set_override_mode(self.combo_override_mode.currentData())
-        s.crawl.save_checkpoint_every = self.spin_checkpoint.value()
-        s.crawl.min_checkpoint_seconds = self.spin_min_checkpoint.value()
-        s.dedup.auto_streaming = self.combo_auto_streaming.currentData()
-        s.dedup.auto_streaming_threshold_mb = self.spin_streaming_mb.value()
+    def _set_if_changed(self, path: str, value) -> None:
+        """Записать поле, только если пользователь его правда поменял.
 
-        # HTML
-        s.html.extract_mode = self.combo_html_mode.currentText()
-        s.html.download_images = self.chk_download_images.isChecked()
-        s.html.image_extensions = self.edit_image_ext.text()
-        s.html.download_files_ext = self.edit_files_ext.text()
-
-        # PDF
-        s.pdf.ocr_enabled = self.chk_ocr.isChecked()
-        s.pdf.ocr_lang = self.edit_ocr_lang.text()
-        s.pdf.ocr_min_chars_per_page = self.spin_ocr_min_chars.value()
-        s.pdf.ocr_parallel_workers = self.spin_ocr_workers.value()
-        s.pdf.image_min_width = self.spin_img_min_width.value()
-        s.pdf.image_min_height = self.spin_img_min_height.value()
-        s.pdf.extract_tables = self.chk_extract_tables.isChecked()
-        s.pdf.two_column_detection = self.chk_two_column.isChecked()
-        s.pdf.filter_schematic_images = self.chk_filter_schematics.isChecked()
-        s.pdf.use_toc_as_structure = self.chk_use_toc.isChecked()
-
-        # GitHub
-        s.github.token = self.edit_github_token.text()
-        s.github.branch = self.edit_github_branch.text()
-        s.github.crawl_issues = self.chk_crawl_issues.isChecked()
-        s.github.crawl_issues_max = self.spin_issues_max.value()
-        s.github.crawl_wiki = self.chk_crawl_wiki.isChecked()
-        s.github.crawl_docs_dir = self.chk_crawl_docs.isChecked()
-        s.github.include_files = self.edit_include_files.text()
-
-        # StackExchange
-        s.stackexchange.api_key = self.edit_se_key.text()
-        s.stackexchange.site = self.combo_se_site.currentText()
-        s.stackexchange.min_score = self.spin_se_min_score.value()
-        s.stackexchange.max_questions = self.spin_se_max_questions.value()
-
-        # Quality
-        s.quality.min_chars = self.spin_min_chars.value()
-        s.quality.max_chars = self.spin_max_chars.value()
-        s.quality.max_non_alpha_ratio = self.spin_max_non_alpha.value()
-        s.quality.max_dup_line_ratio = self.spin_max_dup_lines.value()
-        s.quality.max_code_ratio = self.spin_max_code.value()
-        s.quality.spam_check = self.chk_spam.isChecked()
-        s.quality.language = self.combo_language.currentText()
-        s.quality.languages_allowed = self.edit_langs_allowed.text()
-        s.quality.perplexity_check = self.chk_perplexity.isChecked()
-        s.quality.max_perplexity = self.spin_max_perplexity.value()
-        s.quality.perplexity_model_path = self.edit_perplexity_model.text()
-
-        # Dedup
-        s.dedup.exact = self.chk_exact.isChecked()
-        s.dedup.minhash = self.chk_minhash.isChecked()
-        s.dedup.minhash_num_perm = self.spin_minhash_perm.value()
-        s.dedup.minhash_threshold = self.spin_minhash_threshold.value()
-        s.dedup.dedup_images = self.chk_dedup_images.isChecked()
-        s.dedup.use_streaming = self.chk_streaming.isChecked()
-        s.dedup.use_incremental = self.chk_incremental.isChecked()
-
-        # Performance
-        s.async_crawl.enabled = self.chk_async.isChecked()
-        s.async_crawl.max_concurrent_total = self.spin_max_concurrent.value()
-        s.async_crawl.max_concurrent_per_domain = self.spin_max_per_domain.value()
-        s.crawl.per_url_timeout_minutes = self.spin_url_timeout.value()
-        s.export.gzip_output = self.chk_gzip.isChecked()
-        s.export.parallel_postproc = self.chk_parallel_postproc.isChecked()
-        s.export.parallel_workers = self.spin_parallel_workers.value()
-
-        # GUI
-        s.gui.show_progress_bar = self.chk_show_progress.isChecked()
+        Два нюанса, без которых «Сохранить» снова стало бы «явно задал всё»:
+        • пустое поле виджета («») и None в модели — одно и то же «не задано»;
+        • значение, совпавшее с дефолтом движка, перекрывающую отметку СНИМАЕТ:
+          вернул поле к общему значению — и оно снова берётся из config.yaml.
+        """
+        current = self.settings.get(path)
+        if _is_empty(current) and _is_empty(value):
+            if current is not None:
+                return                              # "" и [] — то же «пусто»
+            self.settings.reset(path)               # виджет очистил заданное поле
+            return
+        if current == value:
+            if self.settings.is_default(path):
+                self.settings.reset(path)
+            return
+        try:
+            self.settings.set(path, value)
+        except (ValueError, KeyError) as e:
+            # виджет выдал то, что движок не примет: не роняем диалог и не
+            # записываем — поле останется взятым из config.yaml
+            log.warning(f"настройка «{path}» не сохранена: {e}")
+            return
+        if self.settings.is_default(path):
+            self.settings.reset(path)
 
     # ============================================================
     # Обработчики кнопок
@@ -974,13 +950,24 @@ class SettingsDialog(QDialog):
         delete_user_preset(key)
         self._reload_presets()
 
+    def _on_reset_overrides(self) -> None:
+        """«Взять из config.yaml»: снять со всех полей отметку «задавал в GUI» (В1).
+
+        До В3 такой кнопки не могло быть: «не перекрывать» приходилось бы
+        вычислять сравнением со вторым набором дефолтов. Здесь это просто
+        очищенный провенанс.
+        """
+        n = self.settings.reset_all()
+        self._load_values()
+        if n:
+            QMessageBox.information(self, tr("st_reset_overrides"),
+                                    tr("st_reset_overrides_done").replace("{n}", str(n)))
+        else:
+            QMessageBox.information(self, tr("st_reset_overrides"), tr("st_reset_none"))
+
     def _on_save(self) -> None:
         """Сохранить настройки и закрыть окно."""
         self._save_values()
-        # Б: помечаем поля, которые пользователь правил В ЭТОМ диалоге. Только
-        # они в режиме «touched» получают право перекрывать config.yaml.
-        self.settings.mark_touched(self.settings.diff_from_snapshot(self._open_snapshot))
-        self._open_snapshot = self.settings.snapshot()
         self.settings.save()
         self.settings.setup_env_vars()
         self.settings_changed.emit()
@@ -1014,7 +1001,7 @@ class SettingsDialog(QDialog):
             self._save_values()
             import json
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.settings.to_dict(), f, ensure_ascii=False, indent=2)
+                json.dump(self.settings.to_export_dict(), f, ensure_ascii=False, indent=2)
             QMessageBox.information(self, trl('Экспортировано'), trl('Настройки сохранены в:\n{0}').format(path))
         except Exception as e:
             QMessageBox.critical(self, trl('Ошибка'), str(e))
@@ -1032,7 +1019,7 @@ class SettingsDialog(QDialog):
             from .app_settings import AppSettings
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.settings = AppSettings._from_dict(data)
+            self.settings = AppSettings.from_dict(data)
             self._load_values()
             QMessageBox.information(self, trl('Импортировано'),
                 trl('Настройки загружены. Нажмите «Сохранить» для применения.'))

@@ -386,7 +386,7 @@ def run_dedup_streaming(corpus_file: str | Path, output_file: str | Path,
                         on_progress: Callable[[int, int], None] | None = None) -> dict:
     """Дедупликация больших корпусов: решений в RAM — O(dup), записей — 0 (A4).
 
-    Обычно `run_dedup` materializует весь список записей (для корпуса из 1M
+    Обычно `run_dedup` материализует весь список записей (для корпуса из 1M
     стотысячесимвольных страниц — десятки ГБ RAM). Здесь три прохода по файлу:
 
       1. проход-скан: точные sha1, канонические URL, LSH MinHash, sha1 картинок
@@ -550,7 +550,7 @@ def run_dedup_adaptive(corpus_file: str | Path, output_file: str | Path,
                  f"dedup.auto_streaming: off)")
 
     if config.streaming or auto:
-        # A4: три прохода по файлу; корпус в RAM не materialизуется
+        # A4: три прохода по файлу; корпус в RAM не материализуется
         stats = run_dedup_streaming(corpus_file, output_file, config,
                                     on_progress=on_progress)
         stats["strategy_auto"] = auto

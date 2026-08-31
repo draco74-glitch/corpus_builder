@@ -257,7 +257,7 @@ class MainWindow(QMainWindow):
             first_run_file.touch()
 
         # Язык интерфейса (Улучшение N)
-        set_language(getattr(self.app_settings.gui, 'language', 'ru'))
+        set_language(self.app_settings.ui.language)
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._refresh_status)
@@ -365,7 +365,7 @@ class MainWindow(QMainWindow):
         ):
             act = self._theme_menu.addAction(tr(tkey))
             act.setCheckable(True)
-            act.setChecked(self.app_settings.gui.theme == theme_name)
+            act.setChecked(self.app_settings.ui.theme == theme_name)
             act.triggered.connect(lambda checked, t=theme_name: self._change_theme(t))
             self.theme_group[theme_name] = act
             self._menu_actions[tkey] = act
@@ -422,7 +422,7 @@ class MainWindow(QMainWindow):
     def _change_language(self, lang: str) -> None:
         """Switch language and rebuild entire UI for full translation."""
         set_language(lang)
-        self.app_settings.gui.language = lang
+        self.app_settings.ui.language = lang
         self.app_settings.save()
 
         # Clear old menu bar
@@ -443,7 +443,7 @@ class MainWindow(QMainWindow):
 
         # Re-apply theme + styles
         self._apply_dark_theme()
-        self._apply_theme(self.app_settings.gui.theme)
+        self._apply_theme(self.app_settings.ui.theme)
 
         # Restore state
         if self.config_path:
@@ -486,27 +486,35 @@ class MainWindow(QMainWindow):
         """
         self.app_settings = AppSettings.load()
         self.app_settings.setup_env_vars()
-        notice = self.app_settings.legacy_migration_notice
+        notice = self.app_settings.legacy_notice
         if notice:
             # показать один раз: файл настроек старше учёта приоритета
-            self.app_settings.legacy_migration_notice = []
+            self.app_settings.legacy_notice = []
             self._log("WARNING", tr("cfg_legacy_migration").replace(
                 "{n}", str(len(notice))))
-        self._report_overrides(self.app_settings.override_report(),
-                               self.app_settings.unchosen_overrides())
+        self._report_overrides(self.app_settings.ui.override_mode,
+                               sorted(self.app_settings.changed()), [])
         self._log("INFO", "Настройки применены")
 
-    def _report_overrides(self, mode_and_applied, unchosen: list[str]) -> None:
-        """Сколько полей конфига перекрывает GUI и какие — «сами собой» (Б)."""
-        mode, applied = mode_and_applied
-        if not applied and mode != "all":
+    def _report_overrides(self, mode: str, applied: list[str],
+                          conflicts: list[tuple[str, object, object]]) -> None:
+        """Что настройки GUI делают с конфигом — числами и конкретными полями (В3).
+
+        `conflicts` — поля, которые заданы ЯВНО и в config.yaml, и в настройках:
+        именно они раньше выглядели как «я поменял YAML, а программа краулит не
+        так». Теперь это видно до запуска.
+        """
+        if not applied:
             self._log("INFO", tr("cfg_none_applied").replace("{mode}", mode))
-        elif applied:
+        else:
             self._log("INFO", tr("cfg_applied_fields").replace(
                 "{n}", str(len(applied))).replace("{mode}", mode))
-        if unchosen:
-            self._log("WARNING", tr("cfg_unchosen_warn").replace(
-                "{fields}", ", ".join(unchosen[:8]) + (" …" if len(unchosen) > 8 else "")))
+        if conflicts:
+            text = "; ".join(f"{p}: файл={a!r} → GUI={b!r}"
+                             for p, a, b in conflicts[:6])
+            if len(conflicts) > 6:
+                text += f" … (+{len(conflicts) - 6})"
+            self._log("WARNING", tr("cfg_unchosen_warn").replace("{fields}", text))
 
     def _export_settings(self) -> None:
         """Экспорт настроек в JSON."""
@@ -517,10 +525,8 @@ class MainWindow(QMainWindow):
             return
         try:
             import json
-            from .app_settings import secret_paths
-
             self.app_settings.save()
-            secrets = secret_paths(self.app_settings)
+            secrets = self.app_settings.filled_secrets()
             redact = True
             if secrets:
                 # секреты по умолчанию НЕ пишем: файл настроек обычно куда-то
@@ -555,7 +561,7 @@ class MainWindow(QMainWindow):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             from .app_settings import AppSettings
-            self.app_settings = AppSettings._from_dict(data)
+            self.app_settings = AppSettings.from_dict(data)
             self.app_settings.save()
             self.app_settings.setup_env_vars()
             self._on_settings_changed()
@@ -580,7 +586,7 @@ class MainWindow(QMainWindow):
 
     def _change_theme(self, theme: str) -> None:
         """Сменить тему оформления."""
-        self.app_settings.gui.theme = theme
+        self.app_settings.ui.theme = theme
         self.app_settings.save()
         QMessageBox.information(self, trl('Тема изменена'),
             trl('Тема изменена на "{0}". Перезапустите приложение для применения.').format(theme))
@@ -615,11 +621,11 @@ class MainWindow(QMainWindow):
 
     def _restore_window_geometry(self) -> None:
         """Восстановить размер и позицию окна из настроек."""
-        w = self.app_settings.gui.window_width
-        h = self.app_settings.gui.window_height
+        w = self.app_settings.ui.window_width
+        h = self.app_settings.ui.window_height
         self.resize(w, h)
         # Проверка обновлений при старте (через 2 секунды, чтобы не блокировать UI)
-        if getattr(self.app_settings.gui, "check_updates_on_start", True):
+        if self.app_settings.ui.check_updates_on_start:
             QTimer.singleShot(2000, self._check_for_updates)
 
     def _check_for_updates(self) -> None:
@@ -839,7 +845,7 @@ class MainWindow(QMainWindow):
         prog_group = QGroupBox(tr("group_progress"))
         self.prog_group = prog_group
         prog_layout = QVBoxLayout(prog_group)
-        # B3: ProgressBarWithETAExistовал в gui_improvements, но в главное окно
+        # B3: ProgressBarWithETA существовал в gui_improvements, но в главное окно
         # не был встроен — «Progress bar with ETA» из README не показывался.
         self.progress_bar = ProgressBarWithETA()
         self.progress_bar.setRange(0, 100)
@@ -1050,9 +1056,9 @@ class MainWindow(QMainWindow):
         applied = self.app_settings.apply_to_config(cfg)
         self.app_settings.setup_env_vars()
         # Б: не немая подмена — пишем, сколько полей перекрыто и почему
-        self._report_overrides(
-            (self.app_settings.override_mode(), applied),
-            self.app_settings.unchosen_overrides())
+        self._report_overrides(self.app_settings.ui.override_mode, applied,
+                               self.app_settings.conflicts_with(self.config)
+                               if self.config is not None else [])
         ensure_output_dirs(cfg)
         self._save_session()
         return cfg
@@ -1808,7 +1814,7 @@ class MainWindow(QMainWindow):
 
     def _change_theme(self, theme: str) -> None:
         """Сменить тему оформления."""
-        self.app_settings.gui.theme = theme
+        self.app_settings.ui.theme = theme
         self.app_settings.save()
         self._apply_theme(theme)
 

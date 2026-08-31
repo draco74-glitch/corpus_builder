@@ -273,7 +273,7 @@ class FinetuneWindow(QMainWindow):
         self.worker: FinetuneWorker | None = None
         self.app_settings = AppSettings.load()
         self.app_settings.setup_env_vars()
-        set_language(getattr(self.app_settings.gui, 'language', 'ru'))
+        set_language(self.app_settings.ui.language)
 
         self.setWindowTitle(tr("ft_window_title"))
         self.resize(1280, 820)
@@ -285,7 +285,7 @@ class FinetuneWindow(QMainWindow):
         self._restore_window_geometry()
 
     def _apply_theme(self):
-        colors = apply_theme(QApplication.instance(), self.app_settings.gui.theme)
+        colors = apply_theme(QApplication.instance(), self.app_settings.ui.theme)
         self.setStyleSheet(get_theme_qss(colors))
 
     def _build_menu(self):
@@ -532,8 +532,8 @@ class FinetuneWindow(QMainWindow):
         pass
 
     def _restore_window_geometry(self):
-        w = getattr(self.app_settings.gui, 'window_width', 1280)
-        h = getattr(self.app_settings.gui, 'window_height', 820)
+        w = self.app_settings.ui.window_width
+        h = self.app_settings.ui.window_height
         self.resize(w, h)
 
     # === Handlers ===
@@ -948,7 +948,7 @@ class FinetuneWindow(QMainWindow):
     def _change_language(self, lang: str) -> None:
         """Switch language and rebuild entire UI for full translation."""
         set_language(lang)
-        self.app_settings.gui.language = lang
+        self.app_settings.ui.language = lang
         self.app_settings.save()
 
         # Clear old menu bar

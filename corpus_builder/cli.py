@@ -194,27 +194,8 @@ def preset_cmd(key, apply_, yaml_out):
         return
 
     if yaml_out:
-        import yaml as _yaml
-
-        from .app_settings import AppSettings
-        targets = dict(AppSettings().mapping())
-        tree: dict = {}
-        skipped = []
-        for path, value in preset.values.items():
-            if path not in targets or path.startswith("gui."):
-                skipped.append(path)
-                continue
-            parts = targets[path].split(".")
-            node = tree
-            for part in parts[:-1]:
-                node = node.setdefault(part, {})
-            node[parts[-1]] = value
-        header = (f"# Накладка пресета «{preset.title}»: {preset.description}\n"
-                  f"# Полей без места в config.yaml пропущено: "
-                  f"{', '.join(skipped) if skipped else 'нет'}\n")
-        Path(yaml_out).write_text(
-            header + _yaml.safe_dump(tree, allow_unicode=True, sort_keys=False),
-            encoding="utf-8")
+        from .presets import preset_to_yaml
+        Path(yaml_out).write_text(preset_to_yaml(preset), encoding="utf-8")
         click.echo(f"Накидка пресета «{preset.title}» записана: {yaml_out}")
         return
 

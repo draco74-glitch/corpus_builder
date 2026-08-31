@@ -440,21 +440,34 @@ writing them — a settings export is exactly the file people paste into issues.
 
 ### Which value wins: config.yaml or the settings dialog?
 
-Both can name the same option (delay, quality thresholds, OCR workers…), so the
-dialog has an explicit **Priority over config.yaml** switch:
+Settings and `config.yaml` are now the *same* fields: the dialog writes
+`AppConfig` paths (`output.request_delay`, `quality.min_chars`,
+`crawlers.pdf.ocr_enabled`) into one sparse document, and pydantic records which
+fields that document actually set. So "what the user chose" is provenance, not a
+guess by comparing against a second list of defaults — an untouched dialog cannot
+change a run, because it stores nothing to override with.
 
 | Mode | Behaviour |
 |---|---|
-| **Only what I changed** (default) | fields you edited in the dialog override config.yaml; everything else comes from the file |
-| **config.yaml wins** | the dialog is a viewer — GUI settings override nothing |
-| **All GUI settings** | legacy behaviour: every GUI value is applied over the file |
+| **Only what I changed** (default) | exactly the fields present in the settings document override config.yaml |
+| **config.yaml wins** | the dialog is a viewer — nothing is applied |
+| **All GUI settings** | legacy behaviour: every value is applied, file ignored |
 
-What actually reaches the engine is not a mystery: `Ctrl+Shift+E` shows the effective
-config and who overrode it, every run logs how many fields the GUI applied and which
-of them were overridden *without* your explicit edit. GUI field defaults are kept equal
-to the engine defaults (a test enforces it), so an untouched dialog cannot change a
-run. Settings files written before this switch existed are migrated once — their
-non-default values are marked as edited — and the log says so.
+`Ctrl+Shift+E` shows the effective config and who overrode it; every run logs how many
+fields were applied and names each field where **the file said X and the GUI says Y**.
+**“Take from config.yaml”** in the dialog clears the marks in bulk (values return to
+the file/defaults, widgets stay put).
+
+`~/.corpus_builder_settings.json` is format v2 (`ui` + `secrets` + sparse `engine`).
+Old flat files are migrated on first load: what was marked as edited is carried over,
+what merely differed from a default is carried over *and announced in the log*, and the
+known-stale old GUI defaults (outdated User-Agent, browser-like headers, OCR workers,
+StackExchange thresholds) are deliberately **not** treated as a user choice.
+
+Secrets no longer live in the engine document at all: `crawlers.github` stores
+`token_env` (a variable *name*), while the token itself sits in `secrets` with `0600`
+and is handed to the engine through the environment. That is why presets and config
+overlays can no longer leak a token either.
 
 ---
 
