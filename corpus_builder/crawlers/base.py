@@ -63,6 +63,9 @@ class BaseCrawler(ABC):
                 record.content = normalize_text(record.content)
                 record.content_sha1 = self._content_hash(record.content)
                 record.language = detect_language(record.content)
+                # маркируем ПОЛЕМ (A2): пост-обработка иначе не нормализует заново.
+                # В metadata метку класть нельзя — дедуп читает верхнеуровневый ключ.
+                record.content_normalized = True
             return record
         except Exception as e:
             log.exception(f"Crawl failed: {url}")

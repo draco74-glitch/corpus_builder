@@ -93,9 +93,28 @@ def postprocess(cfg):
     click.echo(json_dump(stats))
 
 
-@cli.command()
+@cli.command(name="estimate")
+@click.option("--source-type", default=None, help="Только источники указанного типа")
 @click.pass_obj
-def stats(cfg):
+def estimate(cfg, source_type):
+    """Оценка времени краулинга по вежливым задержкам (без запросов)."""
+    from .pipeline import estimate_crawl_minutes
+    sources = [x for x in cfg.sources if not source_type or x.type == source_type]
+    domains = {x.url.split("/")[2] if "//" in x.url else x.url for x in sources}
+    minutes = estimate_crawl_minutes(sources, cfg.output.request_delay)
+    click.echo(json_dump({
+        "sources": len(sources),
+        "domains": len(domains),
+        "request_delay_s": cfg.output.request_delay,
+        "min_wait_minutes": round(minutes, 1),
+        "note": ("задержки действуют на домен и не считаются при попадании в "
+                 "HTTP-кэш; реальное время выше из-за сети и разбора"),
+    }))
+
+
+@cli.command(name="stats")
+@click.pass_obj
+def stats_cmd(cfg):
     """Показать статистику по собранному корпусу."""
     from .state import State
     state = State(cfg.output.state_file)

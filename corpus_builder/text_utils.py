@@ -118,6 +118,22 @@ def matches_patterns(path: str, patterns: list[str] | None) -> bool:
     return False
 
 
+def shingles_bytes(text: str, k: int = 5) -> list[bytes]:
+    """k-словные шинглы сразу в bytes — для пакетной загрузки в MinHash.
+
+    Отдельная функция потому, что `for s in shingles(): mh.update(s.encode())`
+    был самым горячим циклом пост-обработки (~86% времени `run_dedup`), а
+    datasketch умеет считать пакет за один вызов (`update_batch`).
+    """
+    words = re.findall(r"\w+", text.lower())
+    if not words:
+        return []
+    if len(words) < k:
+        return [" ".join(words).encode("utf-8")]
+    return [" ".join(words[i:i + k]).encode("utf-8")
+            for i in range(len(words) - k + 1)]
+
+
 def shingles(text: str, k: int = 5) -> set[str]:
     """Набор k-словных шинглов для MinHash."""
     words = re.findall(r"\w+", text.lower())

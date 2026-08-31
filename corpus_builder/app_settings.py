@@ -7,7 +7,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
-from typing import get_type_hints
+from typing import Iterable, get_type_hints
 
 
 def _coerce_settings_value(value, tp, default):
@@ -48,6 +48,11 @@ def _coerce_settings_value(value, tp, default):
     raise TypeError(f"unsupported type {tp!r} for value {value!r}")
 
 
+#: поля диалога, которые хранятся строкой «a,b,c», а движку нужны списком
+_CSV_FIELDS = {"image_extensions", "download_files_ext", "include_files",
+               "languages_allowed"}
+
+
 def _split_csv(value: str | list | None) -> list[str]:
     """Поля диалога настроек хранятся строкой «a,b,c» — движку нужен список."""
     if value is None:
@@ -75,7 +80,7 @@ class CrawlSettings:
     contact_email: str = ""
     save_checkpoint_every: int = 50
     progress_bar: bool = True
-    per_url_timeout_minutes: int = 10  # таймаут на один URL
+    per_url_timeout_minutes: float = 10.0  # таймаут на один URL
 
 
 @dataclass
@@ -91,6 +96,8 @@ class HtmlCrawlerSettings:
     download_images: bool = True
     image_extensions: str = "svg,png,jpg,jpeg,webp"
     download_files_ext: str = "pdf,kicad_sch,kicad_pcb,zip,sch,brd"
+    #: потолок HTML-страниц на один источник (0 = без ограничения)
+    max_html_pages: int = 0
 
 
 @dataclass
@@ -117,6 +124,10 @@ class GithubCrawlerSettings:
     crawl_wiki: bool = False
     crawl_docs_dir: bool = True
     include_files: str = "*.md,*.kicad_sch,*.kicad_pcb,*.csv,*.dcm,*.lib"
+    #: сколько комментариев подтягивать к каждому issue/PR (0 = только тело)
+    issues_comments_max: int = 20
+    #: максимальный размер ZIP-архива репозитория, МБ
+    max_archive_mb: int = 250
 
 
 @dataclass
@@ -151,6 +162,8 @@ class DedupSettings:
     dedup_images: bool = True
     use_streaming: bool = False
     use_incremental: bool = False
+    #: порог схожести для инкрементального дедупа (0 = как minhash_threshold)
+    incremental_score_threshold: int = 0
 
 
 @dataclass
@@ -168,12 +181,21 @@ class GuiSettings:
     show_progress_bar: bool = True
     #: проверять коммиты на GitHub при старте (Улучшение: отключается тут же)
     check_updates_on_start: bool = True
+    #: C1: значения диалога настроек, которые реально трогали («section.field»).
+    #: Пока список не «*», в движок уезжают ТОЛЬКО они: остальное берётся из
+    #: config.yaml. Иначе GUI молча затирая весь YAML дефолтами (проверено:
+    #: 6 из 6 полей, выставленных в файле, заменялись значениями по умолчанию).
+    ui_overridden: list = field(default_factory=list)
     window_width: int = 1280
     window_height: int = 820
     last_config_path: str = ""
     last_output_dir: str = ""
     last_excel_path: str = ""
     recent_configs: list = field(default_factory=list)
+
+
+#: «*» = применять все настройки (легаси-поведение до введения учёта)
+APPLY_ALL_OVERRIDES = "*"
 
 
 @dataclass
@@ -250,87 +272,196 @@ class AppSettings:
         except Exception as e:
             print(f"Warning: cannot save settings: {e}", file=sys.stderr)
 
+    # ------------------------------------------------------------------
+    # C1: что из настроек РЕАЛЬНО задано, а что осталось дефолтом
+    # ------------------------------------------------------------------
+    def _defaults(self) -> dict[str, object]:
+        """Снимок значений по умолчанию (лениво, в не-pickle-атрибуте)."""
+        cached = getattr(self, "_defaults_cache", None)
+        if cached is None:
+            cached = type(self)().snapshot()
+            object.__setattr__(self, "_defaults_cache", cached)
+        return cached
+
+    def snapshot(self) -> dict[str, object]:
+        """Плоский вид {«section.field»: значение}."""
+        from dataclasses import fields, is_dataclass
+        out: dict[str, object] = {}
+        for f in fields(self):
+            section = getattr(self, f.name)
+            if f.name.startswith("_") or not is_dataclass(section):
+                continue
+            for sub in fields(section):
+                if sub.name.startswith("_"):
+                    continue
+                out[f"{f.name}.{sub.name}"] = getattr(section, sub.name)
+        return out
+
+    def changed_fields(self) -> set[str]:
+        """Поля, значение которых отличается от дефолта dataclass'а."""
+        defaults = self._defaults()
+        snap = self.snapshot()
+        return {k for k, v in snap.items() if k in defaults and v != defaults[k]}
+
+    def overridden_fields(self) -> set[str]:
+        """Что имеет право перекрить config.yaml:
+        явно заданное + то, что отметил диалог (`gui.ui_overridden`)."""
+        cur = set(self.gui.ui_overridden or [])
+        if APPLY_ALL_OVERRIDES in cur:
+            return {APPLY_ALL_OVERRIDES}
+        return self.changed_fields() | cur
+
+    def mark_touched(self, keys: Iterable[str]) -> None:
+        """Диалог настроек: какие поля пользователь правил вручную."""
+        cur = set(self.gui.ui_overridden or [])
+        if APPLY_ALL_OVERRIDES in cur:
+            return
+        cur.update(k for k in keys if k != "gui.ui_overridden")
+        self.gui.ui_overridden = sorted(cur)
+
+    def compute_overridden_from(self, previous: "AppSettings") -> list[str]:
+        """Разница двух снимков (диалог вызывает её при сохранении)."""
+        return self.gui.ui_overridden | []
+
+    def clear_ui_overrides(self) -> None:
+        self.gui.ui_overridden = []
+
     def to_dict(self) -> dict:
         return asdict(self)
 
-    def apply_to_config(self, config) -> None:
+    def mapping(self) -> list[tuple[str, str]]:
+        """Таблица соответствия «настройка GUI → путь в AppConfig».
+
+        Единственный источник истины и для применения, и для теста «все
+        настройки имеют потребителя», и для индикатора эффективного конфига.
+        Формат пути: «секция.[подсекция.]поле».
+        """
+        return [
+            ("crawl.user_agent", "output.user_agent"),
+            ("crawl.request_timeout", "output.request_timeout"),
+            ("crawl.request_delay", "output.request_delay"),
+            ("crawl.max_file_size_mb", "output.max_file_size_mb"),
+            ("crawl.respect_robots_txt", "output.respect_robots_txt"),
+            ("crawl.use_cache", "output.use_http_cache"),
+            ("crawl.cache_ttl_hours", "output.cache_ttl_hours"),
+            ("crawl.revalidate_cached_files", "output.revalidate_cached_files"),
+            ("crawl.use_proxy", "output.use_proxy"),
+            ("crawl.use_browser_headers", "output.use_browser_headers"),
+            ("crawl.contact_email", "output.contact_email"),
+            ("crawl.save_checkpoint_every", "pipeline.save_checkpoint_every"),
+            ("crawl.progress_bar", "pipeline.progress_bar"),
+            ("crawl.per_url_timeout_minutes", "pipeline.per_url_timeout_minutes"),
+            ("async_crawl.enabled", "pipeline.use_async"),
+            ("async_crawl.max_concurrent_total", "pipeline.max_concurrent_total"),
+            ("async_crawl.max_concurrent_per_domain", "pipeline.max_concurrent_per_domain"),
+            ("export.parallel_postproc", "pipeline.parallel_postproc"),
+            ("export.parallel_workers", "pipeline.parallel_workers"),
+            ("export.gzip_output", "export.write_gzip"),
+            ("html.extract_mode", "crawlers.html.extract_mode"),
+            ("html.download_images", "crawlers.html.download_images"),
+            ("html.image_extensions", "crawlers.html.image_extensions"),
+            ("html.download_files_ext", "crawlers.html.download_files_ext"),
+            ("html.max_html_pages", "crawlers.html.max_html_pages"),
+            ("pdf.ocr_enabled", "crawlers.pdf.ocr_enabled"),
+            ("pdf.ocr_lang", "crawlers.pdf.ocr_lang"),
+            ("pdf.ocr_min_chars_per_page", "crawlers.pdf.ocr_min_chars_per_page"),
+            ("pdf.ocr_parallel_workers", "crawlers.pdf.ocr_parallel_workers"),
+            ("pdf.image_min_width", "crawlers.pdf.image_min_width"),
+            ("pdf.image_min_height", "crawlers.pdf.image_min_height"),
+            ("pdf.extract_tables", "crawlers.pdf.extract_tables"),
+            ("pdf.two_column_detection", "crawlers.pdf.two_column_detection"),
+            ("pdf.filter_schematic_images", "crawlers.pdf.filter_schematic_images"),
+            ("pdf.use_toc_as_structure", "crawlers.pdf.use_toc_as_structure"),
+            ("github.branch", "crawlers.github.branch"),
+            ("github.crawl_issues", "crawlers.github.crawl_issues"),
+            ("github.crawl_issues_max", "crawlers.github.crawl_issues_max"),
+            ("github.issues_comments_max", "crawlers.github.issues_comments_max"),
+            ("github.crawl_wiki", "crawlers.github.crawl_wiki"),
+            ("github.crawl_docs_dir", "crawlers.github.crawl_docs_dir"),
+            ("github.max_archive_mb", "crawlers.github.max_archive_mb"),
+            ("github.include_files", "crawlers.github.include_files"),
+            ("stackexchange.site", "crawlers.stackexchange.site"),
+            ("stackexchange.min_score", "crawlers.stackexchange.min_score"),
+            ("stackexchange.max_questions", "crawlers.stackexchange.max_list_questions"),
+            ("quality.min_chars", "quality.min_chars"),
+            ("quality.max_chars", "quality.max_chars"),
+            ("quality.max_non_alpha_ratio", "quality.max_non_alpha_ratio"),
+            ("quality.max_dup_line_ratio", "quality.max_dup_line_ratio"),
+            ("quality.max_code_ratio", "quality.max_code_ratio"),
+            ("quality.spam_check", "quality.spam_check"),
+            ("quality.language", "quality.language"),
+            ("quality.languages_allowed", "quality.languages_allowed"),
+            ("quality.perplexity_check", "quality.perplexity_check"),
+            ("quality.max_perplexity", "quality.max_perplexity"),
+            ("quality.perplexity_model_path", "quality.perplexity_model_path"),
+            ("dedup.exact", "dedup.exact"),
+            ("dedup.minhash", "dedup.minhash"),
+            ("dedup.minhash_num_perm", "dedup.minhash_num_perm"),
+            ("dedup.minhash_threshold", "dedup.minhash_threshold"),
+            ("dedup.dedup_images", "dedup.dedup_images"),
+            ("dedup.use_streaming", "dedup.streaming"),
+            ("dedup.use_incremental", "dedup.incremental"),
+            ("dedup.incremental_score_threshold", "dedup.incremental_score_threshold"),
+        ]
+
+    @staticmethod
+    def _resolve(obj, dotted: str):
+        for part in dotted.split(".")[:-1]:
+            obj = getattr(obj, part)
+        return obj, dotted.split(".")[-1]
+
+    def _get(self, setting_path: str):
+        obj, field = self._resolve(self, setting_path)
+        value = getattr(obj, field)
+        # CSV-поля диалога движку отдают списком
+        if isinstance(value, str) and field in _CSV_FIELDS:
+            return _split_csv(value)
+        if field == "perplexity_model_path" and not value:
+            return None
+        if field == "contact_email" and isinstance(value, str):
+            return value.strip()
+        if field == "branch" and value == "":
+            return None
+        return value
+
+    def apply_to_config(self, config, strict: bool = True) -> list[str]:
         """Перенести настройки приложения в AppConfig (движок).
 
-        Список полей обязан быть полным: чекбокс в диалоге настроек, который
-        никуда не попадает, — это обещание, которое программа не выполняет (I4).
-        Проверка — `test_app_settings.py::test_every_setting_reaches_engine`.
+        C1: по умолчанию применяются ТОЛЬКО поля, которые пользователь реально
+        менял в диалоге настроек (`gui.ui_overridden`). Пока список пуст,
+        config.yaml правит всем — раньше любой запуск из GUI молча подменял
+        значения из файла дефолтами (проверено: 6 из 6 полей, выставленных в
+        YAML, заменялись дефолтами AppSettings).
+
+        `«*»` в списке или `strict=False` — прежнее поведение (наложить всё).
+        Возвращает список применённых «путь в AppConfig» — его показывает
+        индикатор «эффективного конфига» в GUI.
         """
-        out = config.output
-        out.user_agent = self.crawl.user_agent
-        out.request_timeout = self.crawl.request_timeout
-        out.request_delay = self.crawl.request_delay
-        out.max_file_size_mb = self.crawl.max_file_size_mb
-        out.respect_robots_txt = self.crawl.respect_robots_txt
-        out.use_http_cache = self.crawl.use_cache
-        out.revalidate_cached_files = self.crawl.revalidate_cached_files
-        out.cache_ttl_hours = self.crawl.cache_ttl_hours
-        out.use_proxy = self.crawl.use_proxy
-        out.use_browser_headers = self.crawl.use_browser_headers
-        out.contact_email = self.crawl.contact_email.strip()
+        allowed = self.overridden_fields()
+        apply_all = APPLY_ALL_OVERRIDES in allowed or not strict
+        applied: list[str] = []
+        unmarked: list[str] = []
 
-        pipe = config.pipeline
-        pipe.save_checkpoint_every = self.crawl.save_checkpoint_every
-        pipe.progress_bar = self.crawl.progress_bar
-        pipe.per_url_timeout_minutes = self.crawl.per_url_timeout_minutes
-        pipe.use_async = self.async_crawl.enabled
-        pipe.max_concurrent_total = self.async_crawl.max_concurrent_total
-        pipe.max_concurrent_per_domain = self.async_crawl.max_concurrent_per_domain
-        pipe.parallel_postproc = self.export.parallel_postproc
-        pipe.parallel_workers = self.export.parallel_workers
+        for setting_path, config_path in self.mapping():
+            if setting_path.startswith("gui."):        # только UI-состояние
+                continue
+            if not apply_all and setting_path not in allowed:
+                unmarked.append(config_path)
+                continue
+            target, field = self._resolve(config, config_path)
+            setattr(target, field, self._get(setting_path))
+            applied.append(config_path)
 
-        config.export.write_gzip = self.export.gzip_output
+        if apply_all and not self.gui.ui_overridden:
+            # миграция легаси: у пользователя уже есть полный снимок настроек,
+            # считаем его «осознанным», иначе апгрейд молча обесценит файл
+            self.gui.ui_overridden = [APPLY_ALL_OVERRIDES]
+        self._unmarked = unmarked
+        return applied
 
-        config.dedup.exact = self.dedup.exact
-        config.dedup.minhash = self.dedup.minhash
-        config.dedup.minhash_num_perm = self.dedup.minhash_num_perm
-        config.dedup.minhash_threshold = self.dedup.minhash_threshold
-        config.dedup.dedup_images = self.dedup.dedup_images
-        config.dedup.streaming = self.dedup.use_streaming
-        config.dedup.incremental = self.dedup.use_incremental
-
-        config.crawlers.html.extract_mode = self.html.extract_mode
-        config.crawlers.html.download_images = self.html.download_images
-        config.crawlers.html.image_extensions = _split_csv(self.html.image_extensions)
-        config.crawlers.html.download_files_ext = _split_csv(self.html.download_files_ext)
-
-        config.crawlers.pdf.ocr_enabled = self.pdf.ocr_enabled
-        config.crawlers.pdf.ocr_lang = self.pdf.ocr_lang
-        config.crawlers.pdf.ocr_min_chars_per_page = self.pdf.ocr_min_chars_per_page
-        config.crawlers.pdf.ocr_parallel_workers = self.pdf.ocr_parallel_workers
-        config.crawlers.pdf.image_min_width = self.pdf.image_min_width
-        config.crawlers.pdf.image_min_height = self.pdf.image_min_height
-        config.crawlers.pdf.extract_tables = self.pdf.extract_tables
-        config.crawlers.pdf.two_column_detection = self.pdf.two_column_detection
-        config.crawlers.pdf.filter_schematic_images = self.pdf.filter_schematic_images
-        config.crawlers.pdf.use_toc_as_structure = self.pdf.use_toc_as_structure
-
-        config.crawlers.github.branch = self.github.branch or None
-        config.crawlers.github.crawl_issues = self.github.crawl_issues
-        config.crawlers.github.crawl_issues_max = self.github.crawl_issues_max
-        config.crawlers.github.crawl_wiki = self.github.crawl_wiki
-        config.crawlers.github.crawl_docs_dir = self.github.crawl_docs_dir
-        config.crawlers.github.include_files = _split_csv(self.github.include_files)
-
-        config.crawlers.stackexchange.site = self.stackexchange.site
-        config.crawlers.stackexchange.min_score = self.stackexchange.min_score
-        config.crawlers.stackexchange.max_list_questions = self.stackexchange.max_questions
-
-        config.quality.min_chars = self.quality.min_chars
-        config.quality.max_chars = self.quality.max_chars
-        config.quality.max_non_alpha_ratio = self.quality.max_non_alpha_ratio
-        config.quality.max_dup_line_ratio = self.quality.max_dup_line_ratio
-        config.quality.max_code_ratio = self.quality.max_code_ratio
-        config.quality.spam_check = self.quality.spam_check
-        config.quality.language = self.quality.language
-        config.quality.languages_allowed = _split_csv(self.quality.languages_allowed)
-        config.quality.perplexity_check = self.quality.perplexity_check
-        config.quality.max_perplexity = self.quality.max_perplexity
-        config.quality.perplexity_model_path = self.quality.perplexity_model_path or None
+    def unapplied_fields(self) -> list[str]:
+        """Что осталось из config.yaml (ценность для индикатора B8)."""
+        return list(getattr(self, "_unmarked", []))
 
     def setup_env_vars(self) -> None:
         """Установить переменные окружения из настроек."""

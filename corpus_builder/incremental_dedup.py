@@ -10,7 +10,7 @@ from datasketch import MinHash, MinHashLSH
 
 from .logging_setup import get_logger
 from .mmap_reader import MmapJsonlReader
-from .text_utils import normalize_text, shingles
+from .text_utils import normalize_text
 
 log = get_logger(__name__)
 
@@ -57,10 +57,9 @@ class IncrementalDedup:
             log.warning(f"Failed to save LSH index: {e}")
 
     def compute_minhash(self, text: str) -> MinHash:
-        mh = MinHash(num_perm=self.num_perm)
-        for s in shingles(text, k=5):
-            mh.update(s.encode("utf-8"))
-        return mh
+        """MinHash одной записи, пакетом если datasketch умеет (A1)."""
+        from .postproc.dedup import _make_minhash, shingles_bytes
+        return _make_minhash(shingles_bytes(text, k=5), self.num_perm)
 
     def add(self, url: str, text: str) -> str | None:
         if url in self.processed_urls:

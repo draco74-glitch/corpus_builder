@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from typing import Callable
+
 from ..logging_setup import get_logger
 from ..models import QualityConfig
+
+ProgressCallback = Callable[[int, int], None]
 from ..quality_filters import evaluate_quality, load_kenlm_model
 from ..text_utils import detect_language, normalize_text
 
@@ -68,6 +72,7 @@ def run_quality_filter(
     corpus_file: str | Path,
     output_file: str | Path,
     config: QualityConfig,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """Прогнать записи через фильтр качества. Дубликаты исключаются автоматически."""
     corpus_file = Path(corpus_file)
@@ -85,6 +90,9 @@ def run_quality_filter(
     total = 0
     kept = 0
     rejected: dict[str, int] = {}
+    # сначала считаем записи, чтобы у стадии был честный прогресс (A4)
+    with open(corpus_file, "r", encoding="utf-8") as fcount:
+        n_records = sum(1 for line in fcount if line.strip())
 
     with open(corpus_file, "r", encoding="utf-8") as fin, \
          open(output_file, "w", encoding="utf-8") as fout:
@@ -105,7 +113,8 @@ def run_quality_filter(
                 rejected["status_error"] = rejected.get("status_error", 0) + 1
                 continue
 
-            text = normalize_text(r.get("content") or "")
+            text = r["content"] if r.get("content_normalized") else normalize_text(
+                r.get("content") or "")
             passed, metrics = passes_quality(text, config)
             if not passed:
                 # Причины приходят из evaluate_quality — не пересочиняем их здесь
@@ -126,6 +135,9 @@ def run_quality_filter(
             })
             fout.write(json.dumps(r, ensure_ascii=False) + "\n")
             kept += 1
+
+            if on_progress and total % 500 == 0:
+                on_progress(total, n_records)
 
     stats = {
         "total": total,

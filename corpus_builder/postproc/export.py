@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import random
 import shutil
 from pathlib import Path
 from typing import Any
@@ -194,8 +195,27 @@ def export_parquet(corpus_file: str | Path, output_file: str | Path) -> dict:
     return {"records": len(records), "size_bytes": size, "path": str(output_file)}
 
 
-def compute_statistics(corpus_file: str | Path) -> dict:
-    """Собрать расширенную статистику по корпусу для графиков и сводок."""
+MAX_HISTOGRAM_SAMPLE = 20_000
+
+
+def _percentile(sorted_values: list, q: float):
+    """Перцентиль уже отсортированного списка (пустой → 0)."""
+    if not sorted_values:
+        return 0
+    idx = min(len(sorted_values) - 1, max(0, int(round(q * (len(sorted_values) - 1)))))
+    return sorted_values[idx]
+
+
+def compute_statistics(corpus_file: str | Path,
+                       sample_limit: int = MAX_HISTOGRAM_SAMPLE) -> dict:
+    """Собрать расширенную статистику по корпусу для графиков и сводок.
+
+    Списки длин/оценок раньше копились целиком (A7): для корпуса в миллион
+    записей это десятки МБ и лишние секунды только ради гистограмм. Теперь
+    для гистограмм берётся резервуарная выборка не больше `sample_limit`, а
+    полные суммы/средние считаются по всему корпусу (то есть сводка остаётся
+    точной, усредняется только «форма» распределения).
+    """
     corpus_file = Path(corpus_file)
     if not corpus_file.exists():
         return {"total": 0}
@@ -207,6 +227,7 @@ def compute_statistics(corpus_file: str | Path) -> dict:
     by_date: dict[str, int] = {}
     quality_scores: list[float] = []
     content_lengths: list[int] = []
+    n_lengths = n_scores = 0
     duplicates = 0
     total = 0
     total_chars = 0
@@ -234,17 +255,38 @@ def compute_statistics(corpus_file: str | Path) -> dict:
 
         qs = r.get("quality_score")
         if qs is not None:
-            quality_scores.append(float(qs))
+            n_scores += 1
+            if len(quality_scores) < sample_limit:
+                quality_scores.append(float(qs))
+            else:                                    # reservoir sampling
+                j = random.randrange(n_scores)
+                if j < sample_limit:
+                    quality_scores[j] = float(qs)
 
         clen = len(r.get("content") or "")
-        content_lengths.append(clen)
+        n_lengths += 1
+        if len(content_lengths) < sample_limit:
+            content_lengths.append(clen)
+        else:
+            j = random.randrange(n_lengths)
+            if j < sample_limit:
+                content_lengths[j] = clen
         total_chars += clen
 
+    lengths_sorted = sorted(content_lengths)
+    scores_sorted = sorted(quality_scores)
     return {
         "total": total,
         "duplicates": duplicates,
         "total_chars": total_chars,
         "avg_chars": (total_chars // total) if total else 0,
+        "length_sampled_from": n_lengths,
+        # перцентили по выборке (A7): p50/p95/p99 вместо «среднее по небу»
+        "p50_chars": _percentile(lengths_sorted, 0.50),
+        "p95_chars": _percentile(lengths_sorted, 0.95),
+        "p99_chars": _percentile(lengths_sorted, 0.99),
+        "max_chars": lengths_sorted[-1] if lengths_sorted else 0,
+        "p50_quality": _percentile(scores_sorted, 0.50),
         "by_type": by_type,
         "by_language": by_language,
         "by_category": by_category,

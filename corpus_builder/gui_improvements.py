@@ -1402,6 +1402,13 @@ class FirstRunWizard(QWizard):
 
 TRANSLATIONS = {
     "ru": {
+        "col_index": "#",
+        "col_url": "URL",
+        "col_type": "Тип",
+        "col_length": "Длина",
+        "col_language": "Язык",
+        "col_quality": "Quality",
+        "menu_search_log": "Поиск по логу",
         # Меню Файл
         "menu_file": "Файл",
         "menu_open_config": "Открыть config.yaml...",
@@ -1575,6 +1582,54 @@ TRANSLATIONS = {
         "settings_reset_ok": "Настройки сброшены к defaults.",
 
         # Settings dialog
+        # --- фиксы ревью: остановки, история, конфиг (B) ---
+        "confirm_title": "Подтверждение",
+        "stats_calculating": "Считаю статистику…",
+        "eta_log_hint": "Оценка: минимум {minutes} мин на вежливые задержки (request_delay). Для ускорения — async-краулинг в Настройках → Crawling.",
+        "stop_waiting_stage": "Останавливаюсь: дожидаюсь конца текущей стадии…",
+        "stop_hint_stage": "Первое нажатие — корректная остановка на границе стадии. Повторное — прервать принудительно.",
+        "btn_stop_forced": "⏹  Прервать сейчас",
+        "stop_hint": "Первое нажатие — корректная остановка после текущего URL (до {minutes} мин). Повторное — прервать принудительно.",
+        "stop_waiting": "Останавливаюсь: жду завершения текущего URL (таймаут {minutes} мин). Нажмите ещё раз, чтобы прервать принудительно.",
+        "stop_force_title": "Прервать принудительно?",
+        "stop_force_text": "Поток краулинга будет прерван немедленно. Последствия: незавершённая запись может попасть в конец JSONL (битые строки пост-обработка пропускает) и часть скачанного файла может остаться в .tmp.\n\nПрерывать?",
+        "stop_terminated": "Поток прерван принудительно (terminate).",
+        "col_errors": "Ошибки",
+        "close_running_text": "Сбор ещё идёт. Что сделать?",
+        "close_to_tray": "Свернуть в трей (сбор продолжится)",
+        "close_stop_quit": "Остановить и выйти",
+        "tray_running_msg": "Сбор продолжается в фоне. Двойной клик по иконке — показать окно.",
+        "quit_running_text": "Краулинг ещё идёт. Остановить и выйти?",
+        "resume_warn_title": "Внимание:_corpus_file будет перезаписан",
+        "resume_warn_text": ("Флажок «Продолжить (resume)» снят, а в {file} уже лежит "
+                             "{n} записей.\nЗапуск перезапишет этот файл.\n\n"
+                             "Что сделать?"),
+        "resume_warn_eta": "Ожидаемая нижняя граница времени: ~{minutes} мин (только вежливые задержки).",
+        "resume_warn_run": "Перезаписать и запустить",
+        "resume_warn_resume_instead": "Включить resume и дописать",
+        "cfg_no_file_loaded": "config.yaml не загружен — показаны настройки по умолчанию",
+        "cfg_file_broken": "config.yaml не читается",
+        "cfg_effective_note": "Эффективный конфиг (то, что реально поедет в движок)",
+        "cfg_overridden": "Настройки приложения перекрывают {n} полей(е) config.yaml:",
+        "cfg_where": "«→» означает: значение из файла заменено значением из настроек приложения. Отключить: Настройки → «Не перекрывать config.yaml».",
+        "cfg_no_overrides": " config.yaml не перекрывается — эффективный конфиг совпадает с файлом",
+        "cfg_valid": "Конфигурация корректна",
+        "cfg_valid_title": "Проверка конфигурации",
+        "cfg_invalid_title": "Ошибки конфигурации",
+        "cfg_invalid_found": "Найдено проблем: {n}",
+        "menu_save_config": "💾  Сохранить config.yaml…",
+        "menu_effective_config": "🔍  Эффективный config (что реально применится)…",
+        "menu_validate_config": "✔  Проверить config.yaml…",
+        "menu_run_history": "🕘  Журнал прогонов…",
+        "menu_last_metrics": "📊  Метрики последней задачи",
+        "menu_shortcuts": "⌨  Горячие клавиши (F1)",
+        "save_config_ok": "config.yaml сохранён",
+        "save_config_fail": "Не удалось сохранить конфигурацию",
+        "history_empty": "Журнал прогонов пуст ({p})",
+        "history_text": "Последние прогоны (всего записей: {n}):",
+        "no_metrics": "Метрик ещё нет — запустите краулинг или пост-обработку.",
+        "metrics_short": "Обработано: {p}, ошибок: {e}. Полный JSON — в «подробностях».",
+        "shortcuts_text": "Горячие клавиши (действия, у которых есть сочетания):",
         "settings_title": "Настройки CorpusBuilder",
         "settings_header": "⚙  Настройки программы",
         "settings_subtitle": "Все настройки сохраняются автоматически и применяются к следующим запускам.",
@@ -1679,8 +1734,39 @@ TRANSLATIONS = {
         "ft_corpus_validation_warning": "Предупреждение по корпусу:",
         "ft_continue_anyway": "Продолжить всё равно?",
         "lang_changed_msg": "Язык интерфейса изменён. Перезапустите приложение для полного применения.",
+        # --- подписи окна Fine-Tune (B7: раньше не было в RU) ---
+        "ft_completion_full": "Полный completion",
+        "ft_conversation": "Диалог",
+        "ft_corpus_jsonl": "Файл корпуса (JSONL)",
+        "ft_existing_corpus": "Существующий корпус:",
+        "ft_exported_with_split": "Экспортировано с разбиением train/val",
+        "ft_html_report": "HTML-отчёт",
+        "ft_html_report_saved": "HTML-отчёт сохранён",
+        "ft_menu_export_html": "Экспорт HTML-отчёта...",
+        "ft_menu_lang_en": "Английский",
+        "ft_menu_lang_ru": "Русский",
+        "ft_menu_language": "🌐  Язык / Language",
+        "ft_no_corpus_selected": "Корпус не выбран",
+        "ft_no_corpus_selected_desc": "Укажите corpus_final.jsonl или сырой JSONL ниже.",
+        "ft_pair_preview": "Предпросмотр пар",
+        "ft_prompt_full": "Полный prompt",
+        "ft_select_all": "Выбрать все",
+        "ft_select_corpus_file": "Выбрать файл корпуса",
+        "ft_select_none": "Снять выбор",
+        "ft_split_train_val": "Разбить на train/val (90/10)",
+        "ft_task_types": "Типы задач",
+        "ft_use_existing_corpus": "Использовать существующий корпус",
+        "ft_use_existing_corpus_desc": "Не запускать пост-обработку — взять JSONL как есть",
+
     },
     "en": {
+        "col_index": "#",
+        "col_url": "URL",
+        "col_type": "Type",
+        "col_length": "Length",
+        "col_language": "Language",
+        "col_quality": "Quality",
+        "menu_search_log": "Search log",
         "menu_file": "File",
         "menu_open_config": "Open config.yaml...",
         "menu_open_output": "Open corpus folder",
@@ -1847,6 +1933,52 @@ TRANSLATIONS = {
         "settings_reset_ok": "Settings reset to defaults.",
 
         # Settings dialog
+        # --- review fixes: stop, history, config (B) ---
+        "confirm_title": "Confirmation",
+        "stats_calculating": "Computing statistics…",
+        "eta_log_hint": "Estimate: at least {minutes} min of polite delays (request_delay). Switch on async crawling in Settings → Crawling to speed it up.",
+        "stop_waiting_stage": "Stopping: waiting for the current stage to finish…",
+        "stop_hint_stage": "First press stops at the stage boundary. Press again to abort immediately.",
+        "btn_stop_forced": "⏹  Abort now",
+        "stop_hint": "First press stops gracefully after the current URL (up to {minutes} min). Press again to force-abort.",
+        "stop_waiting": "Stopping: waiting for the current URL (timeout {minutes} min). Press again to abort immediately.",
+        "stop_force_title": "Abort immediately?",
+        "stop_force_text": "The crawl thread will be terminated at once. Consequences: a partial record may remain at the end of the JSONL (post-processing skips bad lines) and a partial download may be left as .tmp.\n\nAbort?",
+        "stop_terminated": "Thread forcibly terminated.",
+        "col_errors": "Errors",
+        "close_running_text": "A run is still going. What should happen?",
+        "close_to_tray": "Minimise to tray (run continues)",
+        "close_stop_quit": "Stop and quit",
+        "tray_running_msg": "Collection continues in background. Double-click the icon to show the window.",
+        "quit_running_text": "Crawling is still running. Stop and quit?",
+        "resume_warn_title": "Warning: the corpus file will be overwritten",
+        "resume_warn_text": "“Resume” is unchecked, but {file} already contains {n} records.\nThe run will overwrite this file.\n\nWhat should happen?",
+        "resume_warn_eta": "Expected lower bound: ~{minutes} min (polite delays only).",
+        "resume_warn_run": "Overwrite and start",
+        "resume_warn_resume_instead": "Enable resume and append",
+        "cfg_no_file_loaded": "No config.yaml loaded — defaults are shown",
+        "cfg_file_broken": "config.yaml cannot be read",
+        "cfg_effective_note": "Effective config (what really goes into the engine)",
+        "cfg_overridden": "App settings override {n} field(s) of config.yaml:",
+        "cfg_where": "“→” means the file value was replaced by the app setting. Disable: Settings → “Don't override config.yaml”.",
+        "cfg_no_overrides": "config.yaml is not overridden — the effective config matches the file",
+        "cfg_valid": "Configuration is valid",
+        "cfg_valid_title": "Configuration check",
+        "cfg_invalid_title": "Configuration errors",
+        "cfg_invalid_found": "Problems found: {n}",
+        "menu_save_config": "💾  Save config.yaml…",
+        "menu_effective_config": "🔍  Effective config (what really applies)…",
+        "menu_validate_config": "✔  Validate config.yaml…",
+        "menu_run_history": "🕘  Run history…",
+        "menu_last_metrics": "📊  Last run metrics",
+        "menu_shortcuts": "⌨  Keyboard shortcuts (F1)",
+        "save_config_ok": "config.yaml saved",
+        "save_config_fail": "Could not save the configuration",
+        "history_empty": "Run history is empty ({p})",
+        "history_text": "Recent runs ({n} records total):",
+        "no_metrics": "No metrics yet — run crawling or post-processing.",
+        "metrics_short": "Processed: {p}, errors: {e}. Full JSON in “Details”.",
+        "shortcuts_text": "Keyboard shortcuts (actions that have one):",
         "settings_title": "CorpusBuilder Settings",
         "settings_header": "⚙  Program Settings",
         "settings_subtitle": "All settings are saved automatically and applied on next runs.",
@@ -1991,9 +2123,24 @@ def get_language() -> str:
     return _current_lang
 
 
+_missing_logged: set[str] = set()
+
+
 def tr(key: str) -> str:
-    """Перевести строку по ключу. Если перевода нет — вернуть сам ключ."""
-    return TRANSLATIONS.get(_current_lang, {}).get(key, key)
+    """Перевести строку по ключу.
+
+    Если перевода на текущий язык нет, показываем англоский вариант (B7): раньше
+    возвращался сам ключ, и в русском интерфейсе окна Fine-Tune можно было
+    увидеть «ft_task_types» вместо подписи. О пропуске сообщаем один раз в лог.
+    """
+    table = TRANSLATIONS.get(_current_lang, {})
+    if key in table:
+        return table[key]
+    if key not in _missing_logged:
+        _missing_logged.add(key)
+        log.warning(f"Нет перевода для ключа '{key}' (язык '{_current_lang}') — "
+                    f"показываю английскую строку")
+    return TRANSLATIONS.get("en", {}).get(key, key)
 
 
 # ============================================================

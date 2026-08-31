@@ -141,7 +141,10 @@ class SettingsDialog(QDialog):
 
         # Тема
         self.combo_theme = QComboBox()
-        self.combo_theme.addItems(["dark", "light"])
+        # B5: список тем брался «из головы» (2 из 5) — берём из THEMES
+        from .gui_improvements import THEMES
+        self._theme_ids = list(THEMES.keys())
+        self.combo_theme.addItems(self._theme_ids)
         layout.addRow("Тема оформления:", self.combo_theme)
 
         # Уровень логирования
@@ -546,12 +549,15 @@ class SettingsDialog(QDialog):
         self.spin_max_per_domain.setValue(1)
         layout.addRow("Макс. на домен (1 = вежливо):", self.spin_max_per_domain)
 
-        self.spin_url_timeout = QSpinBox()
-        self.spin_url_timeout.setRange(1, 120)
+        self.spin_url_timeout = QDoubleSpinBox()
+        self.spin_url_timeout.setDecimals(2)
+        self.spin_url_timeout.setRange(0.05, 720)
+        self.spin_url_timeout.setSuffix(" мин")
         self.spin_url_timeout.setValue(10)
         self.spin_url_timeout.setSuffix(" мин")
         self.spin_url_timeout.setToolTip(
-            "Если обработка одного URL занимает больше этого времени \u2014\n"
+            "Если обработка одного URL занимает больше этого времени —\n"
+            "0.05 мин = 3 с; удобно для проверок.\n"
             "URL пропускается и помечается как ошибочный.\n"
             "Защищает от зависания на медленных/больших ресурсах."
         )

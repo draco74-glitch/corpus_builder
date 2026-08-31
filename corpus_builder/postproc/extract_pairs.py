@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Callable
 
 from ..logging_setup import get_logger
 from .prompt_variations import get_prompt
@@ -413,14 +414,18 @@ def extract_faq_pairs(record: dict) -> list[dict]:
     return pairs[:20]  # ограничение на 20 пар с одной записи
 
 
-def run_extract_pairs(corpus_file: str | Path, output_file: str | Path) -> dict:
-    """Извлечь все пары для instruction-tuning."""
+def run_extract_pairs(corpus_file: str | Path, output_file: str | Path,
+                      on_progress: "Callable[[int, int], None] | None" = None) -> dict:
+    """Извлечь все пары для instruction-tuning (A4: с прогрессом стадии)."""
     corpus_file = Path(corpus_file)
     output_file = Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     total_pairs = 0
     by_type: dict[str, int] = {}
+    with open(corpus_file, "r", encoding="utf-8") as fcount:
+        n_records = sum(1 for line in fcount if line.strip())
+    seen = 0
 
     with open(corpus_file, "r", encoding="utf-8") as fin, \
          open(output_file, "w", encoding="utf-8") as fout:
@@ -434,6 +439,9 @@ def run_extract_pairs(corpus_file: str | Path, output_file: str | Path) -> dict:
                 continue
             if r.get("is_duplicate") or r.get("status") != "ok":
                 continue
+            seen += 1
+            if on_progress and seen % 500 == 0:
+                on_progress(seen, n_records)
 
             pairs = []
             pairs.extend(extract_kicad_pairs(r))

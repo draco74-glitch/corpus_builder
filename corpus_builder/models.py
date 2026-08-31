@@ -99,6 +99,8 @@ class CrawlerHTMLConfig(_ValidatingModel):
     download_images: bool = True
     image_extensions: list[str] = Field(default_factory=lambda: ["svg", "png", "jpg", "jpeg", "webp"])
     download_files_ext: list[str] = Field(default_factory=lambda: ["pdf", "kicad_sch", "kicad_pcb", "zip", "sch", "brd"])
+    #: потолок скачанных вложений на один источник (0 = без ограничения)
+    max_html_pages: int = 0
 
 
 class CrawlerPDFConfig(_ValidatingModel):
@@ -181,6 +183,10 @@ class DedupConfig(_ValidatingModel):
     # Потоковые режимы для больших корпусов (то, что настройки GUI обещали, но
     # никуда не передавались — I3/I4).
     streaming: bool = False
+    #: авто-выбор потоковой стратегии для больших корпусов (A4).
+    #: "off" — никогда; "auto" — включать по порогу; "force" — всегда streaming
+    auto_streaming: Literal["off", "auto", "force"] = "auto"
+    auto_streaming_threshold_mb: int = 256
     incremental: bool = False
     incremental_index_file: str = "corpus_output/.dedup_index.pkl"
     incremental_score_threshold: int = 0
@@ -195,8 +201,12 @@ class ExportConfig(_ValidatingModel):
 class PipelineConfig(_ValidatingModel):
     resume: bool = True
     save_checkpoint_every: int = 50
+    #: не чаще этого интервала (сек) писать полный state — см. A5
+    min_checkpoint_seconds: float = 5.0
     progress_bar: bool = True
-    per_url_timeout_minutes: int = 10  # если URL зависает — пропустить после N минут
+    # дробное значение: 10 минут по умолчанию, но для тестов/быстрых прогонов
+    # нужна и гранулярность в секунды (0.5 мин); целое число это исключало
+    per_url_timeout_minutes: float = 10.0
     #: использовать async-путь (aiohttp-краулер + семафоры по домену)
     use_async: bool = False
     max_concurrent_total: int = 8
@@ -255,6 +265,8 @@ class CorpusRecord(_ValidatingModel):
     language: str | None = None
     license: str | None = None
     quality_score: float | None = None
+    #: контент уже нормализован (краулером или стадией normalize) — см. A2
+    content_normalized: bool = False
     is_duplicate: bool = False
     duplicate_of: str | None = None  # source_url оригинала
     status: Literal["ok", "error", "skipped"] = "ok"

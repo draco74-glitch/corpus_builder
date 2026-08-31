@@ -297,7 +297,7 @@ def test_i1_async_pipeline_uses_configured_session_and_rate_limiter(monkeypatch,
     assert seen["source"] is not None, "per-source настройки должны доходить до краулера"
 
     src = Path(async_pipeline.__file__).read_text(encoding="utf-8")
-    assert "rate_limiter.wait" in src, "async-путь обязан соблюдать request_delay"
+    assert "throttle.wait" in src, "async-путь обязан соблюдать request_delay/Crawl-delay"
     assert "asyncio.wait_for" in src, "async-путь обязан применять per-URL таймаут"
 
 
@@ -357,38 +357,77 @@ GUI_ONLY_SETTINGS = {
     "crawl.proxy_list",                            #_corpus_builder_proxies
     "dedup.incremental_score_threshold",
     "stackexchange.min_score", "stackexchange.max_questions",
+    "gui.ui_overridden",           # служебный список, читается apply_to_config
 }
 
 
-def _settings_read_by_apply_to_config() -> set[str]:
-    """Собрать `section.field`, которые apply_to_config реально читает."""
-    import ast
-    import inspect
-    import textwrap
-    tree = ast.parse(textwrap.dedent(inspect.getsource(AppSettings.apply_to_config)))
-    used = set()
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
-                and isinstance(node.value.value, ast.Name)
-                and node.value.value.id == "self"):
-            used.add(f"{node.value.attr}.{node.attr}")
-    return used
-
-
 def test_i4_every_setting_reaches_the_engine():
-    """Чекбокс в диалоге, который никуда не передаётся, — обещание без исполнения.
+    """Каждая настройка диалога имеет потребителя в движке (и наоборот).
 
-    Единственные исключения — чисто GUI-настройки и секреты, уходящие в
-    переменные окружения (см. GUI_ONLY_SETTINGS).
+    Проверяется таблица соответствия AppSettings.mapping(): чекбокс в диалоге,
+    который никуда не передаётся, — обещание, которое программа не выполняет.
     """
+    assert callable(AppSettings.mapping), "AppSettings.mapping() исчезла"
+    pairs = AppSettings().mapping()
+    assert pairs, "пустая таблица соответствия"
+    srcs = {sp for sp, _ in pairs}
+    dsts = [cp for _, cp in pairs]
+    assert len(dsts) == len(set(dsts)), f"в таблицe дублирующиеся цели: {dsts}"
+
     all_fields = set(_all_settings_fields(AppSettings()))
-    consumed = _settings_read_by_apply_to_config() | {"_none_"}
-    consumed -= {"_none_"}
-    unaccounted = all_fields - consumed - GUI_ONLY_SETTINGS
-    assert not unaccounted, f"настройки без потребителя в движке: {sorted(unaccounted)}"
-    # и наоборот: apply_to_config не должен ссылаться на несуществующие поля
-    dangling = consumed - all_fields
-    assert not dangling, f"apply_to_config читает несуществующие поля: {sorted(dangling)}"
+    unaddressed = all_fields - srcs - GUI_ONLY_SETTINGS
+    assert not unaddressed, f"настройки без потребителя в движке: {sorted(unaddressed)}"
+
+    # цели обязаны существовать в AppConfig
+    from corpus_builder.models import AppConfig
+    cfg = AppConfig(sources=[{"url": "http://x", "type": "html"}],
+                    output={"corpus_file": "a.jsonl", "download_dir": "d"})
+    for cp in dsts:
+        if cp.startswith("gui."):
+            continue
+        obj = cfg
+        for part in cp.split(".")[:-1]:
+            obj = getattr(obj, part)
+        assert hasattr(obj, cp.split(".")[-1]), f"нет поля {cp} в AppConfig"
+
+
+def test_c1_yaml_survives_untouched_settings(tmp_path):
+    """C1: не-тронутые дефолты больше не затирают config.yaml."""
+    from corpus_builder.models import AppConfig
+    cfg = AppConfig(sources=[{"url": "http://x", "type": "html"}],
+                    output={"corpus_file": "a.jsonl", "download_dir": "d",
+                            "request_delay": 0.2})
+    cfg.quality.min_chars = 5000
+    cfg.pipeline.per_url_timeout_minutes = 60
+    before = (cfg.output.request_delay, cfg.quality.min_chars,
+              cfg.pipeline.per_url_timeout_minutes)
+    AppSettings().apply_to_config(cfg)          # чистый снимок настроек
+    assert (cfg.output.request_delay, cfg.quality.min_chars,
+            cfg.pipeline.per_url_timeout_minutes) == before, \
+        "значения из config.yaml перезаписаны дефолтами GUI"
+
+    # явно заданное — перекрывает, «*» — как раньше, всё
+    s = AppSettings()
+    s.quality.min_chars = 123
+    s.apply_to_config(cfg)
+    assert cfg.quality.min_chars == 123
+    s2 = AppSettings()
+    s2.gui.ui_overridden = ["*"]
+    s2.apply_to_config(cfg)
+    assert cfg.quality.min_chars == s2.quality.min_chars
+
+
+def test_c1_apply_all_mode_unchanged_for_legacy_users():
+    """«*» в ui_overridden = легаси-поведение: накладываются все поля."""
+    from corpus_builder.models import AppConfig
+    cfg = AppConfig(sources=[{"url": "http://x", "type": "html"}],
+                    output={"corpus_file": "a.jsonl", "download_dir": "d",
+                            "request_delay": 9.5})
+    s = AppSettings()
+    s.gui.ui_overridden = ["*"]
+    applied = s.apply_to_config(cfg)
+    assert "output.request_delay" in applied
+    assert cfg.output.request_delay == s.crawl.request_delay
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -446,6 +485,8 @@ def test_async_deduplicates_same_url_under_concurrency(tmp_path, monkeypatch):
     urls = [json.loads(l)["source_url"] for l in lines]
     assert stats["processed"] == 2, stats
     assert sorted(urls) == ["http://site/dup", "http://site/other"], urls
+    # причина «пропущено» не должна теряться в замыкании
+    assert sum(stats["skipped_breakdown"].values()) == stats["skipped"], stats
 
 
 # ============================================================
@@ -595,3 +636,284 @@ def test_incremental_dedup_second_run_is_cheap(tmp_path):
     assert Path(cfg.incremental_index_file).exists()
     # второй прогон: все URL уже в индексе → новых дублей не появляется
     assert second["removed"] >= 0 and second["total"] == _stats1["total"]
+
+
+# ============================================================
+# A — производительность и надёжность работы
+# ============================================================
+
+def test_a1_minhash_uses_batch_update(tmp_path, monkeypatch):
+    """A1: без update_batch дедуп был 79% времени пост-обработки."""
+    calls = {"batch": 0, "single": 0}
+    import datasketch
+
+    real_minhash = datasketch.MinHash
+
+    class Counting(real_minhash):
+        """Считаем вызовы update ВНЕ пакета: сам update_batch зовёт update."""
+
+        def update(self, value):
+            if not getattr(self, "_in_batch", False):
+                calls["single"] += 1
+            return super().update(value)
+
+        def update_batch(self, values):
+            calls["batch"] += 1
+            self._in_batch = True
+            try:
+                return super().update_batch(values)
+            finally:
+                self._in_batch = False
+
+    import corpus_builder.postproc.dedup as dedup_mod
+    monkeypatch.setattr(dedup_mod, "MinHash", Counting)
+    recs = [{"source_url": f"http://s/{i}", "status": "ok",
+             "content": " ".join(f"w{j}{i}" for j in range(600))} for i in range(6)]
+    dedup_mod.dedup_minhash(recs)
+    assert calls["batch"] == len(recs), f"пакетных вызовов нет: {calls}"
+    assert calls["single"] == 0, f"текст по-прежнему сканится по одному шинглу: {calls}"
+
+
+def test_a2_text_normalized_once_per_record(tmp_path):
+    """A2: нормализация не должна повторяться на каждой стадии."""
+    from corpus_builder.models import CorpusRecord
+    raw = "  Hello   wörld \n\n line two  "
+    rec = CorpusRecord(source_url="u", source_type="html", content=raw)
+    rec.content = __import__("corpus_builder.text_utils", fromlist=["normalize_text"]
+                             ).normalize_text(raw)
+    rec.content_normalized = True
+    d = tmp_path / "c.jsonl"
+    d.write_text(json.dumps({"source_url": "u", "source_type": "html", "status": "ok",
+                             "content": rec.content, "content_normalized": True}) + "\n",
+                 encoding="utf-8")
+    import corpus_builder.text_utils as tu
+    calls = {"n": 0}
+    real = tu.normalize_text
+
+    def counting(text, *a, **k):
+        calls["n"] += 1
+        return real(text, *a, **k)
+
+    from corpus_builder.postproc import dedup as dedup_mod
+    from corpus_builder.postproc import quality as quality_mod
+    monkey = None
+    dedup_mod.normalize_text = counting
+    quality_mod.normalize_text = counting
+    try:
+        dedup_mod.run_dedup(d, tmp_path / "o.jsonl", DedupConfig(minhash=False))
+        run_quality_filter(d, tmp_path / "q.jsonl", QualityConfig(spam_check=False,
+                                                                  language="multi"))
+    finally:
+        dedup_mod.normalize_text = real
+        quality_mod.normalize_text = real
+    assert calls["n"] == 0, f"текст нормализован заново {calls['n']} раз(а)"
+
+
+def test_a4_progress_is_monotonic_and_complete(tmp_path, monkeypatch):
+    """A4: шкала пост-обработки идёт 0→100 и не откатывается."""
+    from corpus_builder.models import AppConfig
+    rows = [{"source_url": f"http://s/{i}", "source_type": "html", "status": "ok",
+             "content": f"# T{i}\n\n" + ("filler words here " * 40 + f"v{i}")}
+            for i in range(120)]
+    cfg = AppConfig(sources=[{"url": "http://s", "type": "html"}],
+                    output={"corpus_file": str(tmp_path / "raw.jsonl"),
+                            "download_dir": str(tmp_path / "dl")})
+    (tmp_path / "raw.jsonl").write_text("\n".join(json.dumps(r) for r in rows), "utf-8")
+    seen = []
+    pipeline.run_postprocess(cfg, on_progress=lambda c, t, m: seen.append((c, t, m)))
+    pcts = [c for c, t, m in seen if t == 100]
+    assert pcts, f"прогресса не было: {seen[:3]}"
+    assert pcts == sorted(pcts), f"прогресс откатывается: {pcts}"
+    assert pcts[-1] == 100, f"не дошёл до 100: {pcts[-1]}"
+
+
+def test_a5_stuck_url_does_not_spawn_threads(tmp_path, monkeypatch):
+    """A5: зависший URL занимает слот пула, а не создаёт новый поток."""
+    import threading, time as _t
+    from corpus_builder.models import AppConfig, CorpusRecord, SourceItem
+
+    cfg = AppConfig(
+        sources=[SourceItem(url=f"http://s/{i}", type="html") for i in range(8)],
+        output={"corpus_file": str(tmp_path / "raw.jsonl"),
+                "download_dir": str(tmp_path / "dl")},
+        # таймаут заведомо короче «зависания»: иначе на перегруженном CPU
+        # сон и таймаут совпадают (0.05 мин = 3 с) и тест начинает мигать
+        pipeline={"per_url_timeout_minutes": 0.02, "save_checkpoint_every": 1,
+                  "max_concurrent_total": 4})
+
+    class Hang:
+        session = None
+        def crawl(self, url, categories=None, source=None):
+            if url.endswith("2"):
+                _t.sleep(8)  # заведомо дольше таймаута
+            return CorpusRecord(source_url=url, source_type="html", content="x" * 500)
+
+    monkeypatch.setattr(pipeline, "make_crawler", lambda t, c, s: Hang())
+    monkeypatch.setattr(pipeline, "RobotsCache",
+                        lambda **kw: type("R", (), {"is_allowed": lambda self, u: True,
+                                                    "respect": False,
+                                                    "crawl_delay": lambda self, u: None})())
+    before = sum(1 for th in threading.enumerate() if "crawl-pool" in th.name)
+    stats = pipeline.run_crawl(cfg, resume=False)
+    after = sum(1 for th in threading.enumerate() if "crawl-pool" in th.name)
+    assert stats["processed"] == 7 and stats["errors"] == 1
+    assert after <= 4 + before, f"трedy пула размножаются: {before} → {after}"
+    assert stats["abandoned_threads"] == 1
+
+
+def test_a5_crawl_delay_from_respected(tmp_path, monkeypatch):
+    """A5: Crawl-delay из robots.txt важнее глобального request_delay."""
+    import time as _t
+    from corpus_builder.models import AppConfig, CorpusRecord, SourceItem
+    from corpus_builder.robots import RateLimiter
+
+    cfg = AppConfig(sources=[SourceItem(url=f"http://d.test/{i}", type="html")
+                             for i in range(3)],
+                    output={"corpus_file": str(tmp_path / "raw.jsonl"),
+                            "download_dir": str(tmp_path / "dl"),
+                            "request_delay": 0.0})
+    delays = {}
+
+    def fake_delay(self, url):
+        return 0.4
+    monkeypatch.setattr(pipeline.RobotsCache, "crawl_delay", fake_delay)
+    rl = RateLimiter(default_delay=0.0)
+    thrott = pipeline.CrawlThrottle(rl, pipeline.RobotsCache(user_agent="x"),
+                                    None, respect_robots=True)
+    t0 = _t.perf_counter(); thrott.wait("http://d.test/0"); first = _t.perf_counter() - t0
+    t0 = _t.perf_counter(); thrott.wait("http://d.test/1"); second = _t.perf_counter() - t0
+    assert second >= 0.35, f"Crawl-delay проигнорирован: {second:.2f}s"
+    assert first < 0.1
+    assert rl._domain_delay.get("d.test") == pytest.approx(0.4)
+
+
+def test_a7_log_and_table_are_bounded():
+    """A7: лог и таблица не разрастаются на длинном ране."""
+    gui_src = (REPO_ROOT / "corpus_builder" / "gui.py").read_text(encoding="utf-8")
+    assert "setMaximumBlockCount" in gui_src
+    assert "MAX_TABLE_ROWS" in gui_src and "removeRow(0)" in gui_src
+    assert "class StatsWorker(QThread)" in gui_src, "статистика считается в GUI-потоке"
+
+
+def test_a3_code_ratio_does_not_rescan():
+    """A3: доля кода считается из уже извлечённых блоков."""
+    from corpus_builder import quality_filters as qf
+    text = "prose " * 50 + "\n\n```python\n" + "x = 1\n" * 80 + "```\n"
+    calls = {"n": 0}
+    real = qf.extract_code_blocks
+
+    def counting(t):
+        calls["n"] += 1
+        return real(t)
+    qf.extract_code_blocks = counting
+    try:
+        qf.evaluate_quality(text, language_check=False, min_chars=1)
+    finally:
+        qf.extract_code_blocks = real
+    assert calls["n"] == 1, f"текр скрипруется {calls['n']} раза(раз) за проверку"
+
+
+def test_a5_hint_when_serial_crawl_is_slow():
+    """A5: подсказка про async появляется, а не молча тормозим."""
+    from corpus_builder.models import AppConfig, SourceItem
+    # 300 URL на 6 доменов → по 50 запросов на домен → ~(50-1)*6*2 c = ~9.8 мин сна
+    cfg = AppConfig(sources=[SourceItem(url=f"http://d{i % 6}.test/{i}", type="html")
+                             for i in range(300)],
+                    output={"corpus_file": "a.jsonl", "download_dir": "d",
+                            "request_delay": 2.0})
+    hint = pipeline.crawl_dispatch_hint(cfg.sources, cfg)
+    assert "use_async" in hint and "мин" in hint
+    cfg.pipeline.use_async = True
+    assert pipeline.crawl_dispatch_hint(cfg.sources, cfg) == ""
+
+
+def test_a5_per_url_timeout_accepts_fraction(tmp_path):
+    """A5: таймаут в 0.05 мин (3 c) должен быть выражим."""
+    from corpus_builder.models import PipelineConfig
+    assert float(PipelineConfig(per_url_timeout_minutes=0.05).per_url_timeout_minutes) == 0.05
+
+
+def test_crawl_reports_skip_reasons_separately(tmp_path, monkeypatch):
+    """«Пропущено» обязано объяснять причину (иначе «куда делись источники» — магия)."""
+    from corpus_builder.models import CorpusRecord
+
+    class Ok:
+        def __init__(self, session=None): self.session = session
+        def crawl(self, url, categories=None, source=None):
+            return CorpusRecord(source_url=url, source_type="html", content="text " * 200)
+
+    monkeypatch.setattr(pipeline, "make_crawler", lambda t, c, s: Ok())
+    _patch_crawl(monkeypatch)                    # robots всегда разрешает
+    cfg = _make_cfg(tmp_path, ["http://s/a", "http://s/b"])
+    first = pipeline.run_crawl(cfg, resume=False)
+    assert first["processed"] == 2 and first["skipped_breakdown"]["already_done"] == 0
+
+    second = pipeline.run_crawl(cfg, resume=True)
+    assert second["processed"] == 0
+    assert second["skipped_breakdown"]["already_done"] == 2, second
+
+    # URL, помеченный ошибкой в прошлом ране, не смешивается с «уже сделано»
+    cfg2 = _make_cfg(tmp_path, ["http://s/fail"])
+    st = pipeline.State(cfg2.output.state_file)
+    st.mark_error("http://s/fail"); st.save()
+    third = pipeline.run_crawl(cfg2, resume=True)
+    assert third["skipped_breakdown"]["previously_failed"] == 1, third
+
+
+def test_crawl_reports_robots_skip_reason(tmp_path, monkeypatch):
+    from corpus_builder import robots as robots_mod
+
+    class Deny:
+        respect = True
+        def is_allowed(self, url): return False
+        def crawl_delay(self, url): return None
+
+    monkeypatch.setattr(pipeline, "build_crawl_context", lambda cfg: {
+        "session": None, "robots": Deny(),
+        "rate_limiter": pipeline.RateLimiter(default_delay=0),
+        "state": pipeline.State(cfg.output.state_file)})
+    monkeypatch.setattr(robots_mod, "pre_filter_by_robots",
+                        lambda srcs, rc, on_skip=None: (srcs, {}))
+    cfg = _make_cfg(tmp_path, ["http://s/one"])
+    stats = pipeline.run_crawl(cfg, resume=False)
+    assert stats["processed"] == 0
+    assert stats["skipped_breakdown"]["robots_disallowed"] == 1, stats
+
+
+def test_skip_breakdown_is_consistent_for_both_pipelines(tmp_path, monkeypatch):
+    """A5: раскладка по причинам «пропущено» обязана сходиться с skipped.
+
+    В async-ветке счётчики живут внутри корутины-замыкания: если инкремент
+    попадает в локальную переменную вместо внешней, причины «испаряются».
+    """
+    import asyncio
+    from corpus_builder import async_pipeline
+    from corpus_builder.models import CorpusRecord
+
+    class Ok:
+        def __init__(self, session=None):
+            self.session = session
+
+        def crawl(self, url, categories=None, source=None):
+            return CorpusRecord(source_url=url, source_type="html", content="body " * 200)
+
+    import corpus_builder.crawlers as crawlers_pkg
+    monkeypatch.setattr(crawlers_pkg, "get_crawler", lambda t, c: Ok())
+    monkeypatch.setattr(async_pipeline, "build_crawl_context", _local_context)
+    monkeypatch.setattr(pipeline, "make_crawler", lambda t, c, s: Ok())
+    _patch_crawl(monkeypatch)
+
+    urls = ["http://s/a", "http://s/b", "http://s/b?utm_source=x"]
+    cfg_a = _make_cfg(tmp_path / "a", urls)
+    st_a = asyncio.run(async_pipeline.run_async_crawl(cfg_a, resume=False))
+    assert st_a["processed"] == 2, st_a        # utm-дубль схлопывается в канон
+    assert sum(st_a["skipped_breakdown"].values()) == st_a["skipped"], st_a
+
+    cfg_s = _make_cfg(tmp_path / "s", urls)
+    st_s = pipeline.run_crawl(cfg_s, resume=False)
+    assert st_s["processed"] == 2, st_s
+    assert sum(st_s["skipped_breakdown"].values()) == st_s["skipped"], st_s
+
+    # повторный прогон: всё «already_done», ни одна причина не теряется
+    st_r = pipeline.run_crawl(cfg_s, resume=True)
+    assert st_r["processed"] == 0 and st_r["skipped_breakdown"]["already_done"] == 3, st_r

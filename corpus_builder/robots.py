@@ -80,6 +80,31 @@ class RobotsCache:
             self._cache[domain] = parser
         return parser
 
+    def crawl_delay(self, url: str) -> float | None:
+        """Crawl-delay / Request-rate из robots.txt домена (A5).
+
+        Прежний конвейер знал только глобальный `output.request_delay` и потому
+        либо долбил сайты, где просят паузу больше, либо тормозил там, где
+        просят меньше. Возвращаем требуемую задержку в секундах или None.
+        """
+        parser = self._get_parser(url)
+        if parser is None:
+            return None
+        delays: list[float] = []
+        try:
+            cd = parser.crawl_delay(self.user_agent)
+            if cd:
+                delays.append(float(cd))
+        except Exception:                          # noqa: BLE001 — robots не критичен
+            pass
+        try:
+            rate = parser.request_rate(self.user_agent)   # Request-rate: N секунд
+            if rate:
+                delays.append(float(rate.seconds) / max(1, rate.requests))
+        except Exception:                          # noqa: BLE001
+            pass
+        return max(delays) if delays else None
+
     def is_allowed(self, url: str) -> bool:
         if not self.respect:
             return True

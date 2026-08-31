@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -34,7 +34,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSplitter,
     QStatusBar,
@@ -59,6 +58,7 @@ from .gui_improvements import (
     DiffCorpusDialog,
     FirstRunWizard,
     KicadPreviewDialog,
+    ProgressBarWithETA,
     RecentConfigsManager,
     SplitterStateSaver,
     ToastNotification,
@@ -72,13 +72,18 @@ from .gui_improvements import (
 from .logging_setup import get_logger
 from .merge_config_dialog import MergeConfigDialog
 from .models import AppConfig
-from .pipeline import run_crawl, run_postprocess
+from .pipeline import estimate_crawl_minutes, run_crawl, run_postprocess
 from .postproc.export import compute_statistics, export_huggingface, export_parquet
 from .settings_dialog import SettingsDialog
 from .startup_dialog import StartupDialog
 from .state import State
 
 log = get_logger(__name__)
+
+#: границы «разрастания» UI (A7): до них окно оставалось линейно медленным и
+#: жрало память на длинных ранах (10k+ записей)
+MAX_LOG_BLOCKS = 3000          # строк в виджете лога (полный лог — в crawl.log)
+MAX_TABLE_ROWS = 500           # строк в таблице «Последние записи»
 
 
 # ---------- Цветовая палитра (тёмная тема, как VS Code Dark+) ----------
@@ -177,6 +182,27 @@ class CrawlWorker(QThread):
 
 # ---------- Главное окно ----------
 
+class StatsWorker(QThread):
+    """Считает статистику корпуса вне GUI-потока (A7).
+
+    `compute_statistics()` обходит весь JSONL; на корпусах в сотни тысяч записей
+    это вешало окно на несколько секунд при каждом обновлении вкладке / Ctrl+S.
+    """
+    ready = Signal(dict, str)
+    failed = Signal(str)
+
+    def __init__(self, corpus_file: Path, parent=None):
+        super().__init__(parent)
+        self.corpus_file = corpus_file
+
+    def run(self) -> None:
+        try:
+            stats = compute_statistics(self.corpus_file)
+            self.ready.emit(stats, str(self.corpus_file))
+        except Exception as e:                       # noqa: BLE001
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -238,6 +264,7 @@ class MainWindow(QMainWindow):
 
         # Создаём state только один раз и периодически перезагружаем без логов
         self._state_for_status: State | None = None
+        self._state_mtime: float | None = None
 
     # ----------------- UI -----------------
 
@@ -312,6 +339,8 @@ class MainWindow(QMainWindow):
         _a(file_menu, "menu_export_hf", tr("menu_export_hf"), self._on_export_hf)
         _a(file_menu, "menu_export_parquet", tr("menu_export_parquet"), self._on_export_parquet)
         file_menu.addSeparator()
+        _a(file_menu, "menu_save_config", tr("menu_save_config"),
+           self._save_config_as, "Ctrl+S")
         _a(file_menu, "menu_quit", tr("menu_quit"), self._quit_app, "Ctrl+Q")
 
         # Settings
@@ -359,13 +388,24 @@ class MainWindow(QMainWindow):
         _a(help_menu, "menu_check_update", tr("menu_check_update"), self._check_for_updates_manual, "Ctrl+U")
         _a(help_menu, "menu_about", tr("menu_about"), self._show_about)
         _a(help_menu, "menu_docs", tr("menu_docs"), self._open_documentation)
-        _a(help_menu, "menu_stats", tr("menu_stats"), self._refresh_stats_charts, "Ctrl+S")
+        act = _a(help_menu, "menu_stats", tr("menu_stats"), self._refresh_stats_charts, "F5")
+        self._stats_action = act
 
         # Tools
         tools_menu = _m("tools", tr("menu_tools_title"))
         _a(tools_menu, "menu_diff", tr("menu_diff"), self._show_diff_dialog)
         _a(tools_menu, "menu_yaml", tr("menu_yaml"), self._show_yaml_editor, "Ctrl+E")
         _a(tools_menu, "menu_dashboard", tr("menu_dashboard"), self._show_dashboard, "Ctrl+D")
+        _a(tools_menu, "menu_effective_config", tr("menu_effective_config"),
+           self._show_effective_config, "Ctrl+Shift+E")
+        _a(tools_menu, "menu_validate_config", tr("menu_validate_config"),
+           self._validate_current_config, "Ctrl+Shift+V")
+        _a(tools_menu, "menu_run_history", tr("menu_run_history"),
+           self._show_run_history, "Ctrl+H")
+        _a(tools_menu, "menu_last_metrics", tr("menu_last_metrics"),
+           self._show_last_metrics, "F4")
+        _a(tools_menu, "menu_shortcuts", tr("menu_shortcuts"),
+           self._show_shortcuts, "F1")
         tools_menu.addSeparator()
 
         self._lang_menu = tools_menu.addMenu(tr("menu_language"))
@@ -765,7 +805,9 @@ class MainWindow(QMainWindow):
         prog_group = QGroupBox(tr("group_progress"))
         self.prog_group = prog_group
         prog_layout = QVBoxLayout(prog_group)
-        self.progress_bar = QProgressBar()
+        # B3: ProgressBarWithETAExistовал в gui_improvements, но в главное окно
+        # не был встроен — «Progress bar with ETA» из README не показывался.
+        self.progress_bar = ProgressBarWithETA()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         prog_layout.addWidget(self.progress_bar)
@@ -786,6 +828,9 @@ class MainWindow(QMainWindow):
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setLineWrapMode(QTextEdit.NoWrap)
+        # A7: виджет лога не должен расти бесконечно — старые строки вытесняются,
+        # полная история остаётся в файле crawl.log
+        self.log_view.document().setMaximumBlockCount(MAX_LOG_BLOCKS)
         log_layout.addWidget(self.log_view)
         log_buttons = QHBoxLayout()
         btn_clear_log = QPushButton(tr("btn_clear_log"))
@@ -1041,9 +1086,19 @@ class MainWindow(QMainWindow):
         resume = self.chk_resume.isChecked()
         retry = self.chk_retry.isChecked()
 
+        if not self.chk_resume.isChecked() and not self._confirm_fresh_overwrite(cfg):
+            return
+
+        self._last_task_mode = "crawl"
+        self._records_total = 0
         self._set_running_state(True)
-        self._log("INFO", "Запуск краулинга...")
+        eta = estimate_crawl_minutes(cfg.sources, cfg.output.request_delay)
+        if eta >= 1:
+            self._log("INFO", tr("eta_log_hint").replace("{minutes}", f"{eta:.0f}"))
+        self._log("INFO", tr("crawl_started"))
         self.progress_bar.setValue(0)
+        if hasattr(self.progress_bar, "reset_timer"):
+            self.progress_bar.reset_timer()
         self.records_table.setRowCount(0)
         self.recent_records.clear()
 
@@ -1067,19 +1122,254 @@ class MainWindow(QMainWindow):
                                 f"{tr('no_corpus_desc')}: {corpus_file}")
             return
 
+        self._last_task_mode = "postprocess"
+        self._records_total = 0
         self._set_running_state(True)
-        self._log("INFO", "Запуск пост-обработки...")
+        self._log("INFO", tr("postprocess_started"))
         self.progress_bar.setValue(0)
+        if hasattr(self.progress_bar, "reset_timer"):
+            self.progress_bar.reset_timer()
 
         self.worker = CrawlWorker(cfg, mode="postprocess")
         self._connect_worker_signals(self.worker)
         self.worker.start()
 
+    def _confirm_fresh_overwrite(self, cfg: AppConfig) -> bool:
+        """B2: запуск без resume затирает собранный корпус — спрашиваем разрешение."""
+        corpus = Path(cfg.output.corpus_file)
+        if not corpus.exists() or corpus.stat().st_size == 0:
+            return True
+        try:
+            with open(corpus, "r", encoding="utf-8") as f:
+                n = sum(1 for line in f if line.strip())
+        except OSError:
+            n = 0
+        eta = estimate_crawl_minutes(cfg.sources, cfg.output.request_delay)
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("resume_warn_title"))
+        box.setText(tr("resume_warn_text")
+                    .replace("{file}", str(corpus))
+                    .replace("{n}", str(n)))
+        box.setInformativeText(tr("resume_warn_eta").replace("{minutes}", f"{eta:.0f}"))
+        run_btn = box.addButton(tr("resume_warn_run"), QMessageBox.ButtonRole.AcceptRole)
+        keep_btn = box.addButton(tr("resume_warn_resume_instead"),
+                                 QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(tr("cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep_btn)          # дефолт — НЕ «затереть»
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is keep_btn:
+            self.chk_resume.setChecked(True)     # дописываем к существующему
+            return True
+        return clicked is run_btn
+
+    # ============================================================
+    # B6/B8/B9/B10: сохранение, «эффективный конфиг», валидация, история
+    # ============================================================
+
+    def _save_config_as(self) -> None:
+        """Ctrl+S: сохранить эффективный конфиг в config.yaml (B6)."""
+        cfg = self._build_effective_config(warn=False)
+        if cfg is None:
+            return
+        suggested = self.config_path or "config.yaml"
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("menu_save_config"), suggested, "YAML (*.yaml *.yml)")
+        if not path:
+            return
+        try:
+            import yaml
+            payload = cfg.model_dump(mode="json")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("# CorpusBuilder config — сохранён из GUI\n")
+                yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+            self.config_edit.setText(path)
+            self._log("INFO", f"{tr('save_config_ok')}: {path}")
+            self._show_toast(tr("save_config_ok"), path, ToastNotification.SUCCESS)
+        except Exception as e:                        # noqa: BLE001
+            self._log("ERROR", f"{tr('save_config_fail')}: {e}")
+            QMessageBox.critical(self, tr("error"), str(e))
+
+    def _diff_against_file(self, effective: AppConfig) -> list[str]:
+        """Чем эффективный конфиг отличается от того, что в файле (B8)."""
+        diffs: list[str] = []
+        if not self.config_path or not Path(self.config_path).exists():
+            return [tr("cfg_no_file_loaded")]
+        try:
+            from .config import load_config
+            base = load_config(self.config_path)
+        except Exception as e:                        # noqa: BLE001
+            return [f"{tr('cfg_file_broken')}: {e}"]
+        for section in ("output", "quality", "dedup", "pipeline", "export", "finetune"):
+            base_obj = getattr(base, section, None)
+            eff_obj = getattr(effective, section, None)
+            if base_obj is None or eff_obj is None:
+                continue
+            for key in base_obj.model_fields:
+                b, e = getattr(base_obj, key), getattr(eff_obj, key)
+                if b != e:
+                    diffs.append(f"{section}.{key}: {b!r} → {e!r}")
+        for i, (b_s, e_s) in enumerate(zip(base.crawlers.model_dump().items(),
+                                           effective.crawlers.model_dump().items())):
+            if b_s != e_s:
+                diffs.append(f"crawlers.{b_s[0]}: {b_s[1]} → {e_s[1]}")
+        return diffs
+
+    def _show_effective_config(self) -> None:
+        """Ctrl+Shift+E: что реально поедет в движок, и кто это перекрыл (B8)."""
+        cfg = self._build_effective_config(warn=False)
+        if cfg is None:
+            return
+        import yaml
+        diffs = self._diff_against_file(cfg)
+        text = ("# " + tr("cfg_effective_note") + "\n"
+                + yaml.safe_dump(cfg.model_dump(mode="json"),
+                                 allow_unicode=True, sort_keys=False))
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("menu_effective_config"))
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        if diffs:
+            box.setText(tr("cfg_overridden").replace("{n}", str(len(diffs)))
+                        + "\n" + "\n".join(diffs[:40]))
+            box.setInformativeText(tr("cfg_where"))
+        else:
+            box.setText(tr("cfg_no_overrides"))
+        box.setDetailedText(text)
+        box.exec()
+
+    def _validate_current_config(self) -> None:
+        """Ctrl+Shift+V: проверить config.yaml и показать человекочитаемо (B9)."""
+        path = self.config_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, tr("menu_validate_config"), tr("no_config_desc"))
+            return
+        from .cli import validate_config_file
+        problems = validate_config_file(path)
+        if problems:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(tr("cfg_invalid_title"))
+            box.setText(tr("cfg_invalid_found").replace("{n}", str(len(problems))))
+            box.setDetailedText("\n".join(f"• {x}" for x in problems))
+            box.exec()
+            for line in problems[:20]:
+                self._log("ERROR", line)
+        else:
+            self._log("INFO", tr("cfg_valid"))
+            QMessageBox.information(self, tr("cfg_valid_title"),
+                                    f"{path}\n{tr('cfg_valid')}")
+
+    def _run_history_file(self) -> Path:
+        base = Path.cwd()
+        if self.config is not None:
+            base = Path(self.config.output.corpus_file).parent
+        return base / "run_history.jsonl"
+
+    def _record_run(self, mode: str, stats: dict) -> None:
+        """B10: журнал запусков — когда, что и сколько собрано."""
+        try:
+            path = self._run_history_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            row = {
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "mode": mode,
+                "config": self.config_path or "",
+                "sources": len(self.config.sources) if self.config else 0,
+                "stats": {k: v for k, v in stats.items()
+                          if isinstance(v, (int, float, str, bool))},
+            }
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError as e:
+            log.debug(f"run history not written: {e}")
+
+    def _show_run_history(self) -> None:
+        """Ctrl+H: журнал последних прогонов и их метрики (B10)."""
+        path = self._run_history_file()
+        if not path.exists():
+            QMessageBox.information(self, tr("menu_run_history"),
+                                    tr("history_empty").replace("{p}", str(path)))
+            return
+        try:
+            rows = [json.loads(l) for l in
+                    path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        except (OSError, json.JSONDecodeError) as e:
+            QMessageBox.warning(self, tr("menu_run_history"), str(e))
+            return
+        lines = []
+        for r in rows[-50:]:
+            st = r.get("stats") or {}
+            counts = " ".join(f"{k}={v}" for k, v in list(st.items())[:6])
+            lines.append(f"{r.get('ts','')}  {r.get('mode',''):11}  {counts}")
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("menu_run_history"))
+        box.setText(tr("history_text").replace("{n}", str(len(rows))) + "\n"
+                    + "\n".join(lines[-25:]))
+        box.setDetailedText(path.read_text(encoding="utf-8"))
+        box.exec()
+
+    def _show_last_metrics(self) -> None:
+        """F4: метрики последней задачи (вместо модалки с JSON на каждом финале)."""
+        stats = getattr(self, "_last_stats", None)
+        if not stats:
+            QMessageBox.information(self, tr("menu_last_metrics"), tr("no_metrics"))
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("menu_last_metrics"))
+        box.setText(self._format_postprocess_summary(stats)
+                    if "dedup" in stats else
+                    tr("metrics_short").replace(
+                        "{p}", str(stats.get("processed", 0))).replace(
+                        "{e}", str(stats.get("errors", 0))))
+        box.setDetailedText(json.dumps(stats, ensure_ascii=False, indent=2))
+        box.exec()
+
+    def _show_shortcuts(self) -> None:
+        """F1: список горячих клавиш — из самих действий меню (B-доступность)."""
+        rows = [f"{a.text()}\t{a.shortcut().toString()}"
+                for a in getattr(self, "_menu_actions", {}).values()
+                if a.shortcut().toString()]
+        QMessageBox.information(
+            self, tr("menu_shortcuts"),
+            tr("shortcuts_text") + "\n" + "\n".join(sorted(set(rows))))
+
+
     def _on_stop(self) -> None:
-        if self.worker and self.worker.isRunning():
+        """Стоп: сначала graceful, повторная кнопка — жёсткий обрыв (B4)."""
+        if not (self.worker and self.worker.isRunning()):
+            return
+        if not getattr(self, "_stop_armed", False):
+            self._stop_armed = True
             self._log("WARN", tr("crawl_stopped"))
             self.worker.request_stop()
-            self.btn_stop.setEnabled(False)
+            mode = getattr(self.worker, "mode", "crawl")
+            if mode == "postprocess":
+                msg, hint = tr("stop_waiting_stage"), tr("stop_hint_stage")
+            else:
+                timeout = (self.config.pipeline.per_url_timeout_minutes
+                           if self.config is not None else 10)
+                msg = tr("stop_waiting").replace("{minutes}", str(timeout))
+                hint = tr("stop_hint").replace("{minutes}", str(timeout))
+            self.btn_stop.setText(tr("btn_stop_forced"))
+            self.btn_stop.setToolTip(hint)
+            self.status.showMessage(msg)
+            return
+        # второе нажатие — жёстко прерываем (с предупреждением о риске)
+        reply = QMessageBox.question(
+            self, tr("stop_force_title"), tr("stop_force_text"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.worker.request_stop()
+            if not self.worker.wait(1000):
+                self.worker.terminate()
+                self._log("ERROR", tr("stop_terminated"))
+        finally:
+            self.worker = None
+            self._stop_armed = False
+            self._set_running_state(False)
 
     def _on_export_hf(self) -> None:
         cfg = self._build_effective_config()
@@ -1134,14 +1424,20 @@ class MainWindow(QMainWindow):
 
     def _on_worker_progress(self, current: int, total: int, msg: str) -> None:
         if total > 0:
-            pct = int(current * 100 / total)
-            self.progress_bar.setValue(pct)
+            if hasattr(self.progress_bar, "set_progress"):
+                self.progress_bar.set_progress(current, total)   # % + ETA + URL/s
+            else:
+                self.progress_bar.setValue(int(current * 100 / total))
             self.progress_label.setText(f"{current}/{total} — {msg}")
         else:
             self.progress_label.setText(msg)
 
     def _on_worker_record(self, record: dict) -> None:
         self.recent_records.append(record)
+        self._records_total = getattr(self, "_records_total", 0) + 1
+        # A7: показываем последние MAX_TABLE_ROWS, а не все N записей
+        while self.records_table.rowCount() >= MAX_TABLE_ROWS:
+            self.records_table.removeRow(0)
         row = self.records_table.rowCount()
         self.records_table.insertRow(row)
         self.records_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
@@ -1153,6 +1449,11 @@ class MainWindow(QMainWindow):
         self.records_table.setItem(row, 5, QTableWidgetItem(f"{qs:.2f}" if qs is not None else "-"))
         # авто-скролл к новой записи
         self.records_table.scrollToBottom()
+        if self._records_total > MAX_TABLE_ROWS:
+            self.records_table.setHorizontalHeaderLabels(
+                [tr("col_index"),
+                 f"{tr('col_url')} (1..{self._records_total})",
+                 tr("col_type"), tr("col_length"), tr("col_language"), tr("col_quality")])
 
     def _on_worker_log(self, level: str, message: str) -> None:
         self._log(level, message)
@@ -1171,16 +1472,27 @@ class MainWindow(QMainWindow):
             self.stats_text.setPlainText(summary)
         self._refresh_stats_charts()
 
+        # B1: раньше в конце каждого запуска всплывала модальная QMessageBox с
+        # дампом JSON — она блокировала окно и требовала клика. Теперь toast +
+        # запись в лог; полный JSON доступен по кнопке в сводке.
+        self._last_stats = stats
+        processed = stats.get("processed", stats.get("kept", 0)) or 0
+        self._show_toast(tr("toast_complete"),
+                         f"{tr('crawl_finished')}: {processed} | "
+                         f"{tr('col_errors')}: {stats.get('errors', 0)}",
+                         ToastNotification.SUCCESS if not stats.get("errors")
+                         else ToastNotification.WARNING)
         # Tray notification
         if self.tray and self.tray.isVisible():
             self.tray.showMessage(
                 "Corpus Builder",
-                f"Задача завершена. Обработано: {stats.get('processed', 0)}",
+                f"{tr('toast_complete')}: {processed}",
                 QSystemTrayIcon.Information, 5000
             )
 
-        QMessageBox.information(self, "Готово",
-                                f"Задача завершена.\n\n{json.dumps(stats, ensure_ascii=False, indent=2)}")
+        self._record_run(getattr(self, "_last_task_mode", "task"), stats)
+        # подробный дамп — не модалкой, а в лог; F4 открывает диалог «подробно»
+        self._log("INFO", "metrics: " + json.dumps(stats, ensure_ascii=False)[:600])
 
     def _on_worker_error(self, err: str) -> None:
         self._log("ERROR", f"Критическая ошибка: {err}")
@@ -1193,6 +1505,13 @@ class MainWindow(QMainWindow):
         self.btn_crawl.setEnabled(not running)
         self.btn_postprocess.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        if not running:
+            # B4: вернуть кнопку «Стоп» в исходное состояние после остановки
+            self._stop_armed = False
+            self.btn_stop.setText(tr("btn_stop"))
+            self.btn_stop.setToolTip("")
+            if hasattr(self.progress_bar, "set_progress"):
+                self.progress_bar.set_format("%p%")
         self.btn_export_hf.setEnabled(not running)
         self.btn_export_parquet.setEnabled(not running)
         if running:
@@ -1224,11 +1543,17 @@ class MainWindow(QMainWindow):
         if self.config is None:
             return
         try:
+            state_path = Path(self.config.output.state_file)
+            mtime = state_path.stat().st_mtime if state_path.exists() else None
             if self._state_for_status is None or \
-                    self._state_for_status.state_file != Path(self.config.output.state_file):
-                self._state_for_status = State(self.config.output.state_file)
-            else:
+                    self._state_for_status.state_file != state_path:
+                self._state_for_status = State(state_path)
+                self._state_mtime = mtime
+            elif mtime != getattr(self, "_state_mtime", None):
+                # A7: перечитываем только если файл реально изменился (2 секунды
+                # на полный JSON-разбор 200k URL — это заметная нагрузка)
                 self._state_for_status.reload_silent()
+            self._state_mtime = mtime
             done = self._state_for_status.done_count
             err = self._state_for_status.error_count
             self.status.showMessage(f"Готов | Обработано: {done} | Ошибок: {err}")
@@ -1236,6 +1561,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _refresh_stats_charts(self) -> None:
+        """Обновить вкладку статистики — расчёт уводится в фон (A7)."""
         if self.config is None:
             return
         corpus_file = Path(self.config.output.corpus_file).parent / "corpus_final.jsonl"
@@ -1245,8 +1571,26 @@ class MainWindow(QMainWindow):
         if not corpus_file.exists():
             return
 
-        stats = compute_statistics(corpus_file)
+        worker = getattr(self, "_stats_worker", None)
+        if worker is not None and worker.isRunning():
+            self._stats_pending = True        # догоним после текущего расчёта
+            return
+        self._stats_pending = False
+        self.status.showMessage(tr("stats_calculating"))
+        self._stats_worker = StatsWorker(corpus_file, self)
+        self._stats_worker.ready.connect(self._on_stats_ready)
+        self._stats_worker.failed.connect(
+            lambda err: self._log("WARNING", f"Статистика: {err}"))
+        self._stats_worker.start()
 
+    def _on_stats_ready(self, stats: dict, source: str) -> None:
+        self.status.showMessage("")
+        self._draw_stats(stats, source)
+        if getattr(self, "_stats_pending", False):
+            self._stats_pending = False
+            self._refresh_stats_charts()      # пересчитаем «пока ждали»
+
+    def _draw_stats(self, stats: dict, source: str = "") -> None:
         # Текстовая сводка
         summary = (
             f"Всего записей: {stats['total']}\n"
@@ -1373,9 +1717,9 @@ class MainWindow(QMainWindow):
     def _quit_app(self) -> None:
         if self.worker and self.worker.isRunning():
             reply = QMessageBox.question(
-                self, "Подтверждение",
-                "Краулинг ещё идёт. Остановить и выйти?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                self, tr("confirm_title"), tr("quit_running_text"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.No:
                 return
@@ -1486,13 +1830,12 @@ class MainWindow(QMainWindow):
             # осмысленного выбора: окно показывало «Отмена» как дефолтную кнопку,
             # а крестик окна интерпретировался как «свернуть в трей» (I9).
             box = QMessageBox(self)
-            box.setWindowTitle("Подтверждение")
-            box.setText("Сбор ещё идёт. Что сделать?")
-            hide_btn = box.addButton("Свернуть в трей (сбор продолжится)",
-                                     QMessageBox.ButtonRole.AcceptRole)
-            quit_btn = box.addButton("Остановить и выйти",
+            box.setWindowTitle(tr("confirm_title"))
+            box.setText(tr("close_running_text"))
+            hide_btn = box.addButton(tr("close_to_tray"), QMessageBox.ButtonRole.AcceptRole)
+            quit_btn = box.addButton(tr("close_stop_quit"),
                                      QMessageBox.ButtonRole.DestructiveRole)
-            cancel_btn = box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            cancel_btn = box.addButton(tr("cancel"), QMessageBox.ButtonRole.RejectRole)
             box.setDefaultButton(hide_btn)
             box.exec()
             clicked = box.clickedButton()
@@ -1513,8 +1856,7 @@ class MainWindow(QMainWindow):
                 if self.tray:
                     self.tray.show()
                     self.tray.showMessage(
-                        "Corpus Builder",
-                        "Сбор продолжается в фоне. Двойной клик по иконке — показать окно.",
+                        "Corpus Builder", tr("tray_running_msg"),
                         QSystemTrayIcon.Information, 3000
                     )
                 event.ignore()

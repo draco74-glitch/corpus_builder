@@ -232,11 +232,17 @@ def extract_code_blocks(text: str) -> tuple[str, list[dict]]:
     return prose, code_blocks
 
 
-def compute_code_text_ratio(text: str) -> float:
-    """Доля кода в тексте (0.0 — нет кода, 1.0 — только код)."""
+def compute_code_text_ratio(text: str,
+                            blocks: list[dict] | None = None) -> float:
+    """Доля кода в тексте (0.0 — нет кода, 1.0 — только код).
+
+    `blocks` — уже извлечённые блоки: без них текст сканируется регулярками
+    ВТОРОЙ раз подряд (A3: двойной проход на каждую запись корпуса).
+    """
     if not text:
         return 0.0
-    _, blocks = extract_code_blocks(text)
+    if blocks is None:
+        _, blocks = extract_code_blocks(text)
     code_chars = sum(b["char_count"] for b in blocks)
     total_chars = len(text)
     if total_chars == 0:
@@ -280,7 +286,7 @@ def evaluate_quality(
     # Базовые метрики из text_utils
     base = estimate_quality(text)
     prose_text, code_blocks = extract_code_blocks(text)
-    code_ratio = compute_code_text_ratio(text)
+    code_ratio = compute_code_text_ratio(text, code_blocks)   # A3: без второго прохода
     language = None
     if language_check:
         language = detect_language_fasttext(text)

@@ -68,17 +68,32 @@ class State:
         with self._lock:
             self._errors.add(url)
 
-    def save(self) -> None:
-        """Атомарная запись состояния во временный файл с переименованием."""
+    def save(self, compact: bool = False) -> int:
+        """Атомарная запись состояния (временный файл + os.replace).
+
+        `compact=True` — для ПРОМЕЖУТОЧНЫХ чекпойнтов: без сортировки и без
+        отступов. Прежний save() на каждый чекпойнт заново сортировал и
+        форматировал всё множество URL, т.е. было O(n) на запись и O(n²) за
+        ран (A5). Отсортированный человекочитаемый вид остаёт финальному
+        сохранению. Возвращает число записанных URL.
+        """
         with self._lock:
-            data = {
-                "done": sorted(self._done),
-                "errors": sorted(self._errors),
-            }
+            done, errors = set(self._done), set(self._errors)
+        if compact:
+            data = {"done": list(done), "errors": list(errors), "sorted": False}
+            dump_kwargs = {"ensure_ascii": False, "separators": (",", ":")}
+        else:
+            data = {"done": sorted(done), "errors": sorted(errors), "sorted": True}
+            dump_kwargs = {"ensure_ascii": False, "indent": 2}
         tmp = str(self.state_file) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.state_file)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, **dump_kwargs)
+            os.replace(tmp, self.state_file)
+        except OSError as e:
+            log.warning(f"Failed to save state: {e}")
+            return 0
+        return len(done) + len(errors)
 
     def __len__(self) -> int:
         with self._lock:

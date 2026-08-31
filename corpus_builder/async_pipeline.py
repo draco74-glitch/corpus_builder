@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from .logging_setup import get_logger
 from .models import AppConfig, CorpusRecord, ErrorRecord, SourceItem
-from .pipeline import build_crawl_context
+from .pipeline import CrawlThrottle, build_crawl_context, crawl_dispatch_hint
 from .state import State
 from .text_utils import canonical_url
 
@@ -109,10 +109,19 @@ async def run_async_crawl(
         if skipped_by_prefilter:
             log.info(f"robots.txt pre-filter: {skipped_by_prefilter} sources skipped")
 
+    throttle = CrawlThrottle(rate_limiter, robots, session, respect_robots=robots.respect)
+    hint = crawl_dispatch_hint(sources, config)
+    if hint:
+        log.info(hint.replace(" Настройки", ""))
     total = len(sources) + skipped_by_prefilter
     processed = 0
     errors = 0
     skipped = skipped_by_prefilter
+    # счётчики причин «пропущено» — через dict: в замыкании `+=` на int
+    # требовал бы nonlocal и молча плодил бы локальную копию
+    skip_counts = {"already_done": 0, "previously_failed": 0,
+                   "robots_disallowed": skipped_by_prefilter,
+                   "duplicate_url_in_config": 0}
     stopped = False
     checkpoint_every = max(1, config.pipeline.save_checkpoint_every)
 
@@ -124,8 +133,17 @@ async def run_async_crawl(
             stopped = True
             return
 
-        if state.is_done(url) or state.is_done(canonical_url(url)) or state.is_error(url):
+        if state.is_error(url):
             skipped += 1
+            skip_counts["previously_failed"] += 1
+            return
+        if state.is_done(url):
+            skipped += 1
+            skip_counts["already_done"] += 1
+            return
+        if state.is_done(canonical_url(url)):
+            skipped += 1
+            skip_counts["duplicate_url_in_config"] += 1
             return
 
         # блокирующий HTTP-запрос robots.txt нельзя делать в event loop:
@@ -138,6 +156,7 @@ async def run_async_crawl(
                        f"robots.txt не разрешает {url[:70]} — пропускаю "
                        f"(для API-краулеров можно `ignore_robots: true`)")
             skipped += 1
+            skip_counts["robots_disallowed"] += 1
             # НЕ mark_done: «запрещено» ≠ «обработано», иначе источник
             # навсегда выпадает из resume-цикла
             return
@@ -163,7 +182,8 @@ async def run_async_crawl(
                 return
 
             # вежливость: того же RateLimiter, что и в синхронном пути
-            await loop.run_in_executor(executor, rate_limiter.wait, url)
+            # A5/A6: троттлинг с Crawl-delay из robots и пропуском сна на cache-hit
+            await loop.run_in_executor(executor, throttle.wait, url)
 
             per_url_timeout = config.pipeline.per_url_timeout_minutes * 60
             try:
@@ -196,6 +216,7 @@ async def run_async_crawl(
                 if record and record.status == "ok" and record.content:
                     if state.is_done(url) or state.is_done(canonical_url(url)):
                         skipped += 1
+                        skip_counts["duplicate_url_in_config"] += 1
                         return
                     from .pipeline import append_record
                     append_record(record, config.output.corpus_file)
@@ -235,6 +256,7 @@ async def run_async_crawl(
         "errors_total": state.error_count,
         "stopped": stopped,
         "async": True,
+        "skipped_breakdown": dict(skip_counts),
     }
     log.info(f"Async crawl finished: {stats}")
     executor.shutdown(wait=False)
