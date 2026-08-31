@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from .auto_discover import AutoDiscover
-from .gui_improvements import tr
+from .gui_improvements import tr, trl
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -285,7 +285,7 @@ class AutoDiscoverDialog(QDialog):
     def _on_search(self):
         """Запустить авто-поиск."""
         if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "Занято", "Поиск уже идёт.")
+            QMessageBox.warning(self, trl('Занято'), trl('Поиск уже идёт.'))
             return
 
         topics_str = self.edit_github_topics.text().strip()
@@ -304,9 +304,8 @@ class AutoDiscoverDialog(QDialog):
             wiki_langs = ["en"]  # default
 
         if not topics_str and not se_tags_str and not wiki_cats_str:
-            QMessageBox.warning(self, "Нет данных",
-                "Укажите хотя бы одну тему/тег/категорию.\\n"
-                "Или выберите пресет из списка.")
+            QMessageBox.warning(self, trl('Нет данных'),
+                trl('Укажите хотя бы одну тему/тег/категорию.\nИли выберите пресет из списка.'))
             return
 
         topics = [t.strip() for t in topics_str.replace(";", ",").split(",") if t.strip()]
@@ -367,16 +366,15 @@ class AutoDiscoverDialog(QDialog):
         self.progress_label.setText(stats_text)
 
         if sources:
-            QMessageBox.information(self, "Поиск завершён",
-                f"Найдено {len(sources)} источников.\\n"
-                f"Нажмите «Сохранить config.yaml» для создания файла."
+            QMessageBox.information(self, trl('Поиск завершён'),
+                trl('Найдено {0} источников.\nНажмите «Сохранить config.yaml» для создания файла.').format(len(sources))
             )
 
     def _on_error(self, err: str):
         self.btn_search.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.progress_label.setText(f"Ошибка: {err}")
-        QMessageBox.critical(self, "Ошибка", err)
+        QMessageBox.critical(self, trl('Ошибка'), err)
 
     def _on_stop(self):
         if self.worker and self.worker.isRunning():
@@ -425,13 +423,12 @@ class AutoDiscoverDialog(QDialog):
             self.config_path = path
             self.sources_count = len(sources)
 
-            QMessageBox.information(self, "Сохранено",
-                f"Создан config.yaml с {len(sources)} источниками.\\n"
-                f"Файл: {path}"
+            QMessageBox.information(self, trl('Сохранено'),
+                trl('Создан config.yaml с {0} источниками.\nФайл: {1}').format(len(sources), path)
             )
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка сохранения", str(e))
+            QMessageBox.critical(self, trl('Ошибка сохранения'), str(e))
 
     def _apply_styles(self):
         self.setStyleSheet(f"""

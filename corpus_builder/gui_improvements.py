@@ -944,10 +944,10 @@ class DiffCorpusDialog(QDialog):
         old_path = self.old_file_edit.text().strip()
         new_path = self.new_file_edit.text().strip()
         if not old_path or not new_path:
-            QMessageBox.warning(self, "Не выбраны файлы", "Укажите оба файла корпусов.")
+            QMessageBox.warning(self, trl('Не выбраны файлы'), trl('Укажите оба файла корпусов.'))
             return
         if not Path(old_path).exists() or not Path(new_path).exists():
-            QMessageBox.warning(self, "Файлы не найдены", "Один или оба файла не существуют.")
+            QMessageBox.warning(self, trl('Файлы не найдены'), trl('Один или оба файла не существуют.'))
             return
 
         try:
@@ -956,7 +956,7 @@ class DiffCorpusDialog(QDialog):
             self._display_result(self._last_result, old_path, new_path)
             self.btn_save_html.setEnabled(True)
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _display_result(self, result: dict, old_name: str, new_name: str) -> None:
         stats = result["stats"]
@@ -1000,9 +1000,9 @@ class DiffCorpusDialog(QDialog):
             new_name = Path(self.new_file_edit.text()).name
             html = _generate_html_report(self._last_result, old_name, new_name)
             Path(path).write_text(html, encoding="utf-8")
-            QMessageBox.information(self, "Сохранено", f"HTML-отчёт сохранён:\n{path}")
+            QMessageBox.information(self, trl('Сохранено'), trl('HTML-отчёт сохранён:\n{0}').format(path))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
 
 # ============================================================
@@ -1076,7 +1076,7 @@ class YamlEditorDialog(QDialog):
                 self.editor.setPlainText(f.read())
             self.file_path = path
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл:\n{e}")
+            QMessageBox.critical(self, trl('Ошибка'), trl('Не удалось открыть файл:\n{0}').format(e))
 
     def _on_load(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1097,10 +1097,10 @@ class YamlEditorDialog(QDialog):
         try:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 f.write(self.editor.toPlainText())
-            QMessageBox.information(self, "Сохранено", f"Файл сохранён:\n{self.file_path}")
+            QMessageBox.information(self, trl('Сохранено'), trl('Файл сохранён:\n{0}').format(self.file_path))
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _on_validate(self) -> None:
         import yaml
@@ -1108,15 +1108,15 @@ class YamlEditorDialog(QDialog):
         try:
             data = yaml.safe_load(text)
             if data is None:
-                QMessageBox.warning(self, "Проверка", "Конфиг пустой")
+                QMessageBox.warning(self, trl('Проверка'), trl('Конфиг пустой'))
             else:
                 keys = list(data.keys()) if isinstance(data, dict) else []
                 QMessageBox.information(
-                    self, "YAML валиден",
-                    f"Синтаксис корректен.\nВерхнеуровневые ключи: {keys}"
+                    self, trl('YAML валиден'),
+                    trl('Синтаксис корректен.\nВерхнеуровневые ключи: {0}').format(keys)
                 )
         except yaml.YAMLError as e:
-            QMessageBox.critical(self, "Ошибка YAML", str(e))
+            QMessageBox.critical(self, trl('Ошибка YAML'), str(e))
 
 
 class _YamlHighlighter(QSyntaxHighlighter):
@@ -1215,7 +1215,7 @@ class DashboardDialog(QDialog):
 
     def _refresh(self) -> None:
         if not self.corpus_file or not Path(self.corpus_file).exists():
-            QMessageBox.warning(self, "Нет данных", "Укажите файл корпуса.")
+            QMessageBox.warning(self, trl('Нет данных'), trl('Укажите файл корпуса.'))
             return
 
         try:
@@ -1244,7 +1244,7 @@ class DashboardDialog(QDialog):
                 self.analytics.refresh(self.corpus_file, self.errors_file)
 
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
 
 # ============================================================
@@ -1503,6 +1503,7 @@ TRANSLATIONS = {
         "progress_ready": "Готов к запуску",
         # Status
         "status_ready": "Готов",
+        "status_counts": "Готов | Обработано: {done} | Ошибок: {errors}",
         "status_working": "Работаю...",
         "status_downloading": "Скачивание обновления...",
         "status_updated": "Обновлено",
@@ -1683,6 +1684,18 @@ TRANSLATIONS = {
         "st_dedup_exact": "Точная дедупликация (sha1)",
         "st_dedup_minhash": "Нечёткая дедупликация (MinHash LSH)",
         "st_dedup_images": "Дедупликация изображений (sha1)",
+        "st_presets": "Пресеты",
+        "st_preset_hint": ("Встроенные профили закрывают частые сценарии; «Сохранить "
+                           "как…» кладёт текущие настройки в свой пресет. Применение "
+                           "пресета помечает его поля изменёнными, поэтому они честно "
+                           "перекроют config.yaml в режиме «только изменённые мною»."),
+        "st_preset_apply": "Применить пресет",
+        "st_preset_save": "Сохранить как пресет…",
+        "st_preset_delete": "Удалить пресет",
+        "st_preset_applied": "Пресет применён: изменено полей — {n}.",
+        "st_preset_name_ask": "Название пресета:",
+        "st_preset_saved": "Пресет «{name}» сохранён (полей: {n}).",
+        "st_preset_delete_ask": "Удалить пресет «{name}»? Действие необратимо.",
         "st_auto_streaming": "Авто-стриминг дедупа",
         "st_streaming_threshold": "Порог авто-стриминга",
         "st_override_mode": "Приоритет над config.yaml",
@@ -1884,6 +1897,7 @@ TRANSLATIONS = {
         "progress_ready": "Ready to start",
         # Status
         "status_ready": "Ready",
+        "status_counts": "Ready | Crawled: {done} | Errors: {errors}",
         "status_working": "Working...",
         "status_downloading": "Downloading update...",
         "status_updated": "Updated",
@@ -2060,6 +2074,18 @@ TRANSLATIONS = {
         "st_dedup_exact": "Exact deduplication (sha1)",
         "st_dedup_minhash": "Fuzzy deduplication (MinHash LSH)",
         "st_dedup_images": "Image deduplication (sha1)",
+        "st_presets": "Presets",
+        "st_preset_hint": ("Built-in profiles cover common scenarios; “Save as…” stores "
+                           "your current settings as a personal preset. Applying a preset "
+                           "marks its fields as changed, so they override config.yaml in "
+                           "the “only what I changed” mode."),
+        "st_preset_apply": "Apply preset",
+        "st_preset_save": "Save as preset…",
+        "st_preset_delete": "Delete preset",
+        "st_preset_applied": "Preset applied: {n} field(s) changed.",
+        "st_preset_name_ask": "Preset name:",
+        "st_preset_saved": "Preset “{name}” saved ({n} field(s)).",
+        "st_preset_delete_ask": "Delete the “{name}” preset? This cannot be undone.",
         "st_auto_streaming": "Dedup auto-streaming",
         "st_streaming_threshold": "Auto-streaming threshold",
         "st_override_mode": "Priority over config.yaml",
@@ -2166,6 +2192,18 @@ TRANSLATIONS = {
     },
 }
 
+#: Б7: переводы «по исходному тексту» (gettext-style msgid = русская строка).
+#: Ключ — сам литерал из кода, поэтому 78 мест диалогов не требуют изобретать
+#: 78 ключей, а русский вариант остаётся тождественным (поведение не меняется).
+LITERAL_TRANSLATIONS: dict[str, dict[str, str]] = {"en": {}}
+
+try:
+    from .literal_translations import EN as _LITERAL_EN
+    LITERAL_TRANSLATIONS["en"] = dict(_LITERAL_EN)
+except Exception as _e:                              # pragma: no cover
+    import logging
+    logging.getLogger(__name__).warning(f"Не загружен словарь литералов: {_e}")
+
 _current_lang = "ru"
 
 
@@ -2182,6 +2220,24 @@ def get_language() -> str:
 
 
 _missing_logged: set[str] = set()
+
+
+def trl(text: str) -> str:
+    """Перевести литерал интерфейса по его русскому исходнику (Б7).
+
+    `tr()` работает по ключам, но переписывать диалоги на ключи — значит
+    придумать ~90 имён и замусорить словарь; здесь ключ = сам текст, а RU —
+    тождество, так что русский интерфейс не меняется вообще.
+    """
+    if not isinstance(text, str):
+        return text
+    if not text or _current_lang == "ru":
+        return text
+    table = LITERAL_TRANSLATIONS.get(_current_lang) or {}
+    if text in table:
+        return table[text]
+    log.warning(f"Нет перевода литерала (язык '{_current_lang}'): {text[:60]!r}")
+    return text
 
 
 def tr(key: str) -> str:

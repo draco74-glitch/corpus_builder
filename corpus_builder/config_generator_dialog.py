@@ -48,7 +48,7 @@ from .config_generator import (
     from_stackexchange_tags,
     save_template_xlsx,
 )
-from .gui_improvements import tr
+from .gui_improvements import tr, trl
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -257,8 +257,8 @@ class ConfigGeneratorDialog(QDialog):
                 self._log("INFO", "Настройки применены")
         except Exception as e:
             import traceback
-            QMessageBox.critical(self, "Ошибка настроек",
-                f"Не удалось открыть настройки:\n\n{e}\n\n{traceback.format_exc()[:500]}")
+            QMessageBox.critical(self, trl('Ошибка настроек'),
+                trl('Не удалось открыть настройки:\n\n{0}\n\n{1}').format(e, traceback.format_exc()[:500]))
 
     # ----------------- UI -----------------
 
@@ -626,7 +626,7 @@ class ConfigGeneratorDialog(QDialog):
             rows = from_excel(path)
         except Exception as e:
             self._log("ERROR", f"Не удалось прочитать файл: {e}")
-            QMessageBox.warning(self, "Ошибка чтения", str(e))
+            QMessageBox.warning(self, trl('Ошибка чтения'), str(e))
             return
         self.excel_table.setRowCount(0)
         for i, (url, depth, cats) in enumerate(rows):
@@ -647,13 +647,12 @@ class ConfigGeneratorDialog(QDialog):
         try:
             save_template_xlsx(target)
             self._log("INFO", f"Шаблон сохранён: {target}")
-            QMessageBox.information(self, "Шаблон создан",
-                f"Шаблон сохранён:\n{target}\n\n"
-                "Откройте его в Excel, заполните колонки url и depth, сохраните и загрузите обратно.")
+            QMessageBox.information(self, trl('Шаблон создан'),
+                trl('Шаблон сохранён:\n{0}\n\nОткройте его в Excel, заполните колонки url и depth, сохраните и загрузите обратно.').format(target))
             # Открыть папку в проводнике
             self._open_in_explorer(Path(target).parent)
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _open_in_explorer(self, path: Path) -> None:
         if not path.exists():
@@ -664,7 +663,7 @@ class ConfigGeneratorDialog(QDialog):
     def _on_generate(self) -> None:
         try:
             if self.worker and self.worker.isRunning():
-                QMessageBox.warning(self, "Занято", "Дождитесь завершения текущей задачи.")
+                QMessageBox.warning(self, trl('Занято'), trl('Дождитесь завершения текущей задачи.'))
                 return
 
             # Определяем активную вкладку
@@ -678,15 +677,14 @@ class ConfigGeneratorDialog(QDialog):
         except Exception as e:
             import traceback
             self._log("ERROR", f"Ошибка генерации: {e}")
-            QMessageBox.critical(self, "Ошибка генерации",
-                f"Не удалось сгенерировать config.yaml:\n\n{e}\n\n"
-                f"Подробности:\n{traceback.format_exc()[:500]}")
+            QMessageBox.critical(self, trl('Ошибка генерации'),
+                trl('Не удалось сгенерировать config.yaml:\n\n{0}\n\nПодробности:\n{1}').format(e, traceback.format_exc()[:500]))
 
     def _start_excel_generation(self) -> None:
         path = self.excel_path_edit.text().strip()
         if not path or not Path(path).exists():
-            QMessageBox.warning(self, "Файл не выбран",
-                "Укажите путь к Excel/CSV-файлу на вкладке «Excel / CSV».")
+            QMessageBox.warning(self, trl('Файл не выбран'),
+                trl('Укажите путь к Excel/CSV-файлу на вкладке «Excel / CSV».'))
             return
         self._set_running_state(True)
         skip_crawl = self.chk_skip_crawl.isChecked()
@@ -711,8 +709,8 @@ class ConfigGeneratorDialog(QDialog):
     def _start_github_generation(self) -> None:
         topics_str = self.gh_topics_edit.text().strip()
         if not topics_str:
-            QMessageBox.warning(self, "Нет данных",
-                "Укажите хотя бы один topic (например, kicad, pcb)")
+            QMessageBox.warning(self, trl('Нет данных'),
+                trl('Укажите хотя бы один topic (например, kicad, pcb)'))
             return
         topics = [t.strip() for t in topics_str.replace(";", ",").split(",") if t.strip()]
         language = self.gh_language_edit.text().strip() or None
@@ -733,8 +731,8 @@ class ConfigGeneratorDialog(QDialog):
     def _start_stackexchange_generation(self) -> None:
         tags_str = self.se_tags_edit.text().strip()
         if not tags_str:
-            QMessageBox.warning(self, "Нет данных",
-                "Укажите хотя бы один тег (например, kicad, pcb, stm32)")
+            QMessageBox.warning(self, trl('Нет данных'),
+                trl('Укажите хотя бы один тег (например, kicad, pcb, stm32)'))
             return
         tags = [t.strip() for t in tags_str.replace(";", ",").split(",") if t.strip()]
         site = self.se_site_combo.currentText()
@@ -758,8 +756,8 @@ class ConfigGeneratorDialog(QDialog):
         """Поиск статей Wikipedia по категориям."""
         categories_str = self.wiki_categories_edit.text().strip()
         if not categories_str:
-            QMessageBox.warning(self, "Нет данных",
-                "Укажите хотя бы одну категорию (например: Electronics)")
+            QMessageBox.warning(self, trl('Нет данных'),
+                trl('Укажите хотя бы одну категорию (например: Electronics)'))
             return
 
         categories = [c.strip() for c in categories_str.replace(";", ",").split(",") if c.strip()]
@@ -849,8 +847,8 @@ class ConfigGeneratorDialog(QDialog):
         self._log("INFO", f"Сбор завершён: {len(sources)} источников")
 
         if not sources:
-            QMessageBox.warning(self, "Пусто",
-                "Не найдено ни одного источника. Проверьте параметры или файл.")
+            QMessageBox.warning(self, trl('Пусто'),
+                trl('Не найдено ни одного источника. Проверьте параметры или файл.'))
             return
 
         # Сохранить config.yaml
@@ -865,19 +863,17 @@ class ConfigGeneratorDialog(QDialog):
         try:
             build_config(sources, target)
             self._log("INFO", f"Config сохранён: {target}")
-            QMessageBox.information(self, "Готово",
-                f"Сохранено источников: {len(sources)}\n"
-                f"Файл: {target}\n\n"
-                f"Теперь можно загрузить этот config.yaml в главное окно и запустить краулинг."
+            QMessageBox.information(self, trl('Готово'),
+                trl('Сохранено источников: {0}\nФайл: {1}\n\nТеперь можно загрузить этот config.yaml в главное окно и запустить краулинг.').format(len(sources), target)
             )
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка сохранения", str(e))
+            QMessageBox.critical(self, trl('Ошибка сохранения'), str(e))
 
     def _on_worker_error(self, err: str) -> None:
         self._set_running_state(False)
         self._log("ERROR", f"Ошибка: {err}")
-        QMessageBox.critical(self, "Критическая ошибка", err)
+        QMessageBox.critical(self, trl('Критическая ошибка'), err)
 
     def _on_worker_log(self, level: str, msg: str) -> None:
         self._log(level, msg)

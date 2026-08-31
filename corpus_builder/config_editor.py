@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .gui_improvements import trl
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -200,7 +201,7 @@ class YamlEditor(QWidget):
             with open(path, "r", encoding="utf-8") as f:
                 self.editor.setPlainText(f.read())
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _save_file(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -211,23 +212,23 @@ class YamlEditor(QWidget):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.editor.toPlainText())
-            QMessageBox.information(self, "Сохранено", f"Файл сохранён:\n{path}")
+            QMessageBox.information(self, trl('Сохранено'), trl('Файл сохранён:\n{0}').format(path))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _validate_yaml(self) -> None:
         text = self.editor.toPlainText()
         try:
             data = yaml.safe_load(text)
             if data is None:
-                QMessageBox.warning(self, "Пусто", "Конфиг пустой")
+                QMessageBox.warning(self, trl('Пусто'), trl('Конфиг пустой'))
             else:
                 QMessageBox.information(
                     self, "OK",
-                    f"YAML валиден.\nВерхнеуровневые ключи: {list(data.keys())}"
+                    trl('YAML валиден.\nВерхнеуровневые ключи: {0}').format(list(data.keys()))
                 )
         except yaml.YAMLError as e:
-            QMessageBox.critical(self, "Ошибка YAML", str(e))
+            QMessageBox.critical(self, trl('Ошибка YAML'), str(e))
 
     def set_text(self, text: str) -> None:
         self.editor.setPlainText(text)
@@ -377,18 +378,15 @@ class AdvancedConfigEditor(QWidget):
             self.yaml_editor.set_text(yaml_text)
             log.info(f"Loaded Excel: {path}, {len(rows)} rows → YAML editor")
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить файл:\n{e}")
+            QMessageBox.critical(self, trl('Ошибка'), trl('Не удалось загрузить файл:\n{0}').format(e))
 
     def _on_profile(self, name: str, cfg: dict) -> None:
         """Применить выбранный профиль к YAML в редакторе."""
         log.info(f"Profile selected: {name}")
         # Просто показываем уведомление — реальная фильтрация применяется при краулинге
         QMessageBox.information(
-            self, "Профиль выбран",
-            f"Профиль: {name}\n"
-            f"Тип: {cfg.get('sources_type_filter') or 'все'}\n"
-            f"Категории: {', '.join(cfg.get('categories_filter') or []) or 'все'}\n\n"
-            "Профиль будет применён при запуске краулинга."
+            self, trl('Профиль выбран'),
+            trl('Профиль: {0}\nТип: {1}\nКатегории: {2}\n\nПрофиль будет применён при запуске краулинга.').format(name, cfg.get('sources_type_filter') or 'все', ', '.join(cfg.get('categories_filter') or []) or 'все')
         )
 
 

@@ -68,6 +68,7 @@ from .gui_improvements import (
     get_theme_qss,
     set_language,
     tr,
+    trl,
 )
 from .logging_setup import get_logger
 from .merge_config_dialog import MergeConfigDialog
@@ -76,7 +77,7 @@ from .pipeline import estimate_crawl_minutes, run_crawl, run_postprocess
 from .postproc.export import compute_statistics, export_huggingface, export_parquet
 from .settings_dialog import SettingsDialog
 from .startup_dialog import StartupDialog
-from .state import State
+from .state import State, disk_signature
 
 log = get_logger(__name__)
 
@@ -470,6 +471,8 @@ class MainWindow(QMainWindow):
         """Открыть диалог настроек."""
         dialog = SettingsDialog(self.app_settings, self)
         dialog.settings_changed.connect(self._on_settings_changed)
+        # В5: пресет меняет настройки — индикатор приоритета тоже обновляем
+        dialog.preset_applied.connect(lambda _key: self._on_settings_changed())
         dialog.exec()
 
     def _on_settings_changed(self) -> None:
@@ -536,9 +539,9 @@ class MainWindow(QMainWindow):
             if redact and secrets:
                 msg += "\n" + tr("export_secrets_hidden").replace(
                     "{fields}", ", ".join(secrets[:6]))
-            QMessageBox.information(self, "Экспортировано", msg)
+            QMessageBox.information(self, trl('Экспортировано'), msg)
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _import_settings(self) -> None:
         """Импорт настроек из JSON."""
@@ -556,15 +559,15 @@ class MainWindow(QMainWindow):
             self.app_settings.save()
             self.app_settings.setup_env_vars()
             self._on_settings_changed()
-            QMessageBox.information(self, "Импортировано", "Настройки загружены и применены.")
+            QMessageBox.information(self, trl('Импортировано'), trl('Настройки загружены и применены.'))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _reset_settings(self) -> None:
         """Сбросить настройки к defaults."""
         reply = QMessageBox.question(
-            self, "Сброс настроек",
-            "Сбросить все настройки к значениям по умолчанию?",
+            self, trl('Сброс настроек'),
+            trl('Сбросить все настройки к значениям по умолчанию?'),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply == QMessageBox.Yes:
@@ -579,8 +582,8 @@ class MainWindow(QMainWindow):
         """Сменить тему оформления."""
         self.app_settings.gui.theme = theme
         self.app_settings.save()
-        QMessageBox.information(self, "Тема изменена",
-            f"Тема изменена на \"{theme}\". Перезапустите приложение для применения.")
+        QMessageBox.information(self, trl('Тема изменена'),
+            trl('Тема изменена на "{0}". Перезапустите приложение для применения.').format(theme))
 
     def _toggle_log_visibility(self) -> None:
         """Показать/скрыть панель лога."""
@@ -594,15 +597,15 @@ class MainWindow(QMainWindow):
 
     def _show_about(self) -> None:
         """Показать окно 'О программе'."""
-        QMessageBox.about(self, "О программе",
-            "<h3>CorpusBuilder</h3>"
-            "<p>Сборщик сырого корпуса для pretraining LLM</p>"
-            "<p>Версия: 0.2.0</p>"
-            "<p>GitHub: <a href=\"https://github.com/draco74-glitch/corpus_builder\">"
-            "github.com/draco74-glitch/corpus_builder</a></p>"
-            "<p>Поддерживаемые источники: HTML, PDF, GitHub, StackExchange, "
-            "DOAJ, arXiv, Crossref, Wikipedia</p>"
-        )
+        from . import __version__
+        QMessageBox.about(
+            self, trl('О программе'),
+            trl('<h3>CorpusBuilder</h3><p>Сборщик сырого корпуса для pretraining '
+                'LLM</p><p>Версия: {0}</p><p>GitHub: <a href="https://github.com/'
+                'draco74-glitch/corpus_builder">github.com/draco74-glitch/'
+                'corpus_builder</a></p><p>Поддерживаемые источники: HTML, PDF, '
+                'GitHub, StackExchange, DOAJ, arXiv, Crossref, Wikipedia</p>'
+                ).format(__version__))
 
     def _open_documentation(self) -> None:
         """Открыть документацию в браузере."""
@@ -658,13 +661,8 @@ class MainWindow(QMainWindow):
         author = commit_info.get("author", "")
 
         reply = QMessageBox.question(
-            self, "Обновление из коммита",
-            f"Коммит: {short_sha}\n"
-            f"Автор: {author}\n"
-            f"Сообщение: {message}\n\n"
-            f"Применить обновление?\n"
-            f"Будут скачаны и заменены .py файлы.\n"
-            f"Программу нужно будет перезапустить.",
+            self, trl('Обновление из коммита'),
+            trl('Коммит: {0}\nАвтор: {1}\nСообщение: {2}\n\nПрименить обновление?\nБудут скачаны и заменены .py файлы.\nПрограмму нужно будет перезапустить.').format(short_sha, author, message),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
         )
         if reply != QMessageBox.Yes:
@@ -685,22 +683,19 @@ class MainWindow(QMainWindow):
                 failed = result.get("files_failed", 0)
                 self.status.showMessage(f"Обновлено {updated} файлов")
                 QMessageBox.information(
-                    self, "Обновление применено",
-                    f"Успешно обновлено .py файлов: {updated}\n"
-                    f"Ошибок: {failed}\n\n"
-                    f"Пожалуйста, перезапустите CorpusBuilder\n"
-                    f"для применения изменений."
+                    self, trl('Обновление применено'),
+                    trl('Успешно обновлено .py файлов: {0}\nОшибок: {1}\n\nПожалуйста, перезапустите CorpusBuilder\nдля применения изменений.').format(updated, failed)
                 )
                 QApplication.quit()
             else:
                 error = result.get("error", "Неизвестная ошибка")
                 self.status.showMessage("Обновление не удалось")
                 QMessageBox.warning(
-                    self, "Ошибка обновления",
-                    f"Не удалось применить обновление:\n{error}"
+                    self, trl('Ошибка обновления'),
+                    trl('Не удалось применить обновление:\n{0}').format(error)
                 )
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _check_for_updates_manual(self) -> None:
         """Ручная проверка обновлений (по коммитам)."""
@@ -719,12 +714,8 @@ class MainWindow(QMainWindow):
                 date = commit_info.get("date", "")
 
                 reply = QMessageBox.question(
-                    self, "Доступно обновление",
-                    f"Новый коммит: {short_sha}\n"
-                    f"Автор: {author}\n"
-                    f"Дата: {date}\n"
-                    f"Сообщение: {message}\n\n"
-                    f"Применить обновление?",
+                    self, trl('Доступно обновление'),
+                    trl('Новый коммит: {0}\nАвтор: {1}\nДата: {2}\nСообщение: {3}\n\nПрименить обновление?').format(short_sha, author, date, message),
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
                 )
                 if reply == QMessageBox.Yes:
@@ -733,11 +724,11 @@ class MainWindow(QMainWindow):
                     self._apply_update()
             else:
                 QMessageBox.information(
-                    self, "Обновления",
-                    "У вас последняя версия (все коммиты применены)."
+                    self, trl('Обновления'),
+                    trl('У вас последняя версия (все коммиты применены).')
                 )
         except Exception as e:
-            QMessageBox.warning(self, "Ошибка проверки", str(e))
+            QMessageBox.warning(self, trl('Ошибка проверки'), str(e))
         finally:
             self.status.showMessage(tr("status_ready"))
 
@@ -1031,7 +1022,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.config = None
             self._log("ERROR", f"Не удалось загрузить конфиг: {e}")
-            QMessageBox.critical(self, "Ошибка конфигурации", str(e))
+            QMessageBox.critical(self, trl('Ошибка конфигурации'), str(e))
 
     def _build_effective_config(self) -> AppConfig | None:
         """Конфиг с перекрытым output dir (без мутации self.config — I9).
@@ -1042,8 +1033,8 @@ class MainWindow(QMainWindow):
         который GUI мог изменить в любой момент.
         """
         if self.config is None:
-            QMessageBox.warning(self, "Нет конфигурации",
-                                 "Сначала выберите config.yaml")
+            QMessageBox.warning(self, trl('Нет конфигурации'),
+                                 trl('Сначала выберите config.yaml'))
             return None
         cfg = copy.deepcopy(self.config)
         out_dir = self.output_edit.text().strip()
@@ -1074,8 +1065,8 @@ class MainWindow(QMainWindow):
                 self._log("INFO", "Конфиги объединены")
         except Exception as e:
             self._log("ERROR", f"Ошибка объединения: {e}")
-            QMessageBox.critical(self, "Ошибка",
-                f"Не удалось объединить конфиги:\n\n{e}")
+            QMessageBox.critical(self, trl('Ошибка'),
+                trl('Не удалось объединить конфиги:\n\n{0}').format(e))
 
     def _on_auto_discover(self) -> None:
         """Открыть диалог авто-поиска источников."""
@@ -1086,10 +1077,8 @@ class MainWindow(QMainWindow):
                 # Если найдены источники — подсказать пользователю
                 if hasattr(dialog, "config_path") and dialog.config_path:
                     reply = QMessageBox.question(
-                        self, "Источники найдены",
-                        f"Создан config.yaml с {dialog.sources_count} источниками.\n\n"
-                        f"Файл: {dialog.config_path}\n\n"
-                        f"Загрузить его в главное окно?",
+                        self, trl('Источники найдены'),
+                        trl('Создан config.yaml с {0} источниками.\n\nФайл: {1}\n\nЗагрузить его в главное окно?').format(dialog.sources_count, dialog.config_path),
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
                     )
                     if reply == QMessageBox.Yes:
@@ -1098,14 +1087,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             import traceback
             self._log("ERROR", f"Ошибка авто-поиска: {e}")
-            QMessageBox.critical(self, "Ошибка",
-                f"Не удалось выполнить авто-поиск:\n\n{e}\n\n"
-                f"{traceback.format_exc()[:500]}")
+            QMessageBox.critical(self, trl('Ошибка'),
+                trl('Не удалось выполнить авто-поиск:\n\n{0}\n\n{1}').format(e, traceback.format_exc()[:500]))
 
     def _on_open_config_generator(self) -> None:
         """Открыть мастер создания config.yaml из Excel/GitHub/StackExchange."""
         if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "Занято",
+            QMessageBox.warning(self, trl('Занято'),
                 tr("busy_crawl"))
             return
         try:
@@ -1118,9 +1106,8 @@ class MainWindow(QMainWindow):
             import traceback
             error_msg = traceback.format_exc()
             self._log("ERROR", f"Ошибка при открытии мастера: {e}")
-            QMessageBox.critical(self, "Ошибка",
-                f"Не удалось открыть мастер создания config.yaml:\n\n{e}\n\n"
-                f"Подробности:\n{error_msg[:500]}")
+            QMessageBox.critical(self, trl('Ошибка'),
+                trl('Не удалось открыть мастер создания config.yaml:\n\n{0}\n\nПодробности:\n{1}').format(e, error_msg[:500]))
 
     def _on_start_crawl(self) -> None:
         cfg = self._build_effective_config()
@@ -1434,9 +1421,9 @@ class MainWindow(QMainWindow):
             stats = export_huggingface(corpus_file, Path(target) / "corpus_hf_dataset")
             self._log("INFO", f"HF экспорт: {stats['records']} записей → {stats['path']}")
             QMessageBox.information(self, tr("info"),
-                                     f"Записей: {stats['records']}\nПапка: {stats['path']}")
+                                     trl('Записей: {0}\nПапка: {1}').format(stats['records'], stats['path']))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка экспорта", str(e))
+            QMessageBox.critical(self, trl('Ошибка экспорта'), str(e))
 
     def _on_export_parquet(self) -> None:
         cfg = self._build_effective_config()
@@ -1455,10 +1442,10 @@ class MainWindow(QMainWindow):
         try:
             stats = export_parquet(corpus_file, target)
             self._log("INFO", f"Parquet экспорт: {stats['records']} записей, {stats['size_bytes']} байт")
-            QMessageBox.information(self, "Экспорт завершён",
-                                     f"Записей: {stats['records']}\nРазмер: {stats['size_bytes']} байт\nФайл: {stats['path']}")
+            QMessageBox.information(self, trl('Экспорт завершён'),
+                                     trl('Записей: {0}\nРазмер: {1} байт\nФайл: {2}').format(stats['records'], stats['size_bytes'], stats['path']))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка экспорта", str(e))
+            QMessageBox.critical(self, trl('Ошибка экспорта'), str(e))
 
     def _connect_worker_signals(self, worker: CrawlWorker) -> None:
         worker.progress.connect(self._on_worker_progress)
@@ -1544,7 +1531,7 @@ class MainWindow(QMainWindow):
     def _on_worker_error(self, err: str) -> None:
         self._log("ERROR", f"Критическая ошибка: {err}")
         self._set_running_state(False)
-        QMessageBox.critical(self, "Критическая ошибка", err)
+        QMessageBox.critical(self, trl('Критическая ошибка'), err)
 
     # ----------------- Хелперы UI -----------------
 
@@ -1591,21 +1578,27 @@ class MainWindow(QMainWindow):
             return
         try:
             state_path = Path(self.config.output.state_file)
-            mtime = state_path.stat().st_mtime if state_path.exists() else None
+            # А5: состояния теперь живут в снимке + журнале: смотреть mtime
+            # только state.json нельзя — счётчики отставали бы до компакции
+            signature = disk_signature(state_path)
             if self._state_for_status is None or \
                     self._state_for_status.state_file != state_path:
                 self._state_for_status = State(state_path)
-                self._state_mtime = mtime
-            elif mtime != getattr(self, "_state_mtime", None):
-                # A7: перечитываем только если файл реально изменился (2 секунды
+                self._state_mtime = signature
+            elif signature != getattr(self, "_state_mtime", None):
+                # A7: перечитываем только если файлы реально изменились (2 секунды
                 # на полный JSON-разбор 200k URL — это заметная нагрузка)
                 self._state_for_status.reload_silent()
-            self._state_mtime = mtime
+            self._state_mtime = signature
             done = self._state_for_status.done_count
             err = self._state_for_status.error_count
-            self.status.showMessage(f"Готов | Обработано: {done} | Ошибок: {err}")
-        except Exception:
-            pass
+            self.status.showMessage(
+                tr("status_counts")
+                .replace("{done}", str(done)).replace("{errors}", str(err)))
+        except Exception as e:
+            # раньше здесь был голый pass: опечатка в этом методе (NameError)
+            # проявлялась как «счётчики не обновляются», без единой подсказки
+            self._log("DEBUG", f"status update failed: {type(e).__name__}: {e}")
 
     def _refresh_stats_charts(self) -> None:
         """Обновить вкладку статистики — расчёт уводится в фон (A7)."""
@@ -1745,7 +1738,7 @@ class MainWindow(QMainWindow):
     def _open_output_folder(self) -> None:
         path = self.output_edit.text().strip()
         if not path or not Path(path).exists():
-            QMessageBox.warning(self, "Папка не найдена", f"Укажите существующую папку.\nТекущее значение: {path}")
+            QMessageBox.warning(self, trl('Папка не найдена'), trl('Укажите существующую папку.\nТекущее значение: {0}').format(path))
             return
         if sys.platform == "win32":
             os.startfile(path)

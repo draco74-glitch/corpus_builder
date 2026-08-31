@@ -1,6 +1,5 @@
 """Создание иконки для CorpusBuilder."""
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-import math
 import os
 
 def create_icon(size=256):
@@ -66,7 +65,6 @@ def create_icon(size=256):
 
     # Пины
     pn = 6
-    pw = int(6*s)
     ph = int(3*s)
     pg = (ch - pn*ph) // (pn+1)
     for i in range(pn):

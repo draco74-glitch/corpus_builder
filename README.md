@@ -180,6 +180,12 @@ corpus-builder diff corpus_old.jsonl corpus_new.jsonl --html report.html
 ### CLI extras
 
 ```bash
+corpus-builder validate                   # проверить config.yaml, ничего не запуская
+corpus-builder validate --strict          # замечания (дубль URL, нет contact e-mail) = ошибка
+corpus-builder -c broken.yaml validate --config good.yaml   # проверить любой файл, даже если -c битый
+corpus-builder estimate                   # сколько займёт краулинг с учётом вежливости
+corpus-builder schema --out schema.json   # JSON-схема конфига для редактора
+corpus-builder preset                     # список профилей; --apply/--yaml см. Settings
 corpus-builder crawl --async          # async path (config: pipeline.use_async)
 corpus-builder export --format both   # corpus_final.jsonl → HF dir + Parquet
 corpus-builder package --zip          # ZIP/patch.zip for auto-update (dev tool)
@@ -280,6 +286,12 @@ Behaviour deliberately changed — check your configs/scripts:
 Things the pipeline now guarantees — mostly regressions found in review, see
 [CHANGELOG](CHANGELOG.md):
 
+- **Resume state is `state.json` + `state.journal`.** Intermediate checkpoints append
+  only new URLs to the journal (rewriting the whole snapshot every time made long runs
+  quadratic); the snapshot itself is refreshed periodically and once at the end. The
+  two files belong together — deleting the journal loses everything crawled after the
+  last snapshot. Old `state.json` files without a journal load unchanged, and a torn
+  last journal line (crash mid-write) is discarded rather than half-applied.
 - **`resume=False` rewrites the corpus instead of appending to it.** Previously
   `--no-resume` cleared `state.json` but `raw_corpus.jsonl` was only ever opened
   in append mode, so every fresh run duplicated the whole dataset (and then broke
@@ -307,8 +319,19 @@ Things the pipeline now guarantees — mostly regressions found in review, see
 
 ## ⚡ Performance Optimizations
 
-Wired and disabled_by_default where noted. Numbers are *expected* effects from the
-design, not benchmarks — measured numbers are welcome as PRs.
+Wired and disabled_by_default where noted.
+
+Measured on Python 3.13 / one laptop, output byte-for-byte identical before and after
+each change:
+
+| What was measured | Before | After |
+|---|---|---|
+| post-processing, 2000 records (dedup + quality + normalize + pairs) | 30.6 s | **6.9 s** |
+| dedup over 4000 records, peak RSS | 61 MB | **15 MB** (streaming) |
+| 20 state checkpoints at 20 000 URLs | 169.8 ms | **0.4 ms** |
+| the same at 60 000 URLs | 494.6 ms | **0.4 ms** (flat in state size) |
+| stuck URL (no answer) | one new thread per remaining source | one pool slot, reported as `abandoned_threads` |
+| incremental dedup, second run over the same corpus | 0 duplicates found (silent!) | same as the first run |
 
 | # | Optimization | Status | Notes |
 |---|-------------|--------|-------|
@@ -325,7 +348,14 @@ design, not benchmarks — measured numbers are welcome as PRs.
 | 11 | Prefetch robots.txt | ✅ used by the pre-filter | |
 | 12 | Gzip JSONL export | ✅ `export.write_gzip` | writes `corpus_final.jsonl.gz` |
 | 13 | Memory-mapped reading | ✅ via incremental dedup | |
-| 14 | Incremental dedup (LSH index on disk) | ✅ `dedup.incremental` (off) | index file in config |
+| 14 | Incremental dedup (LSH index on disk) | ✅ `dedup.incremental` (off) | decisions cached by content hash; a re-run now reports the same duplicates as a cold run |
+| 15 | Batch MinHash (`HashTokenizer.update_batch`) | ✅ always | no per-shingle Python loop |
+| 16 | Normalize text once per record | ✅ `content_normalized` field in the corpus | dedup/quality/normalize stopped re-running it |
+| 17 | Auto-streaming dedup above a size threshold | ✅ `dedup.auto_streaming: auto`, `auto_streaming_threshold_mb: 256` | large corpora stay in RAM; `off`/`force` to pin it |
+| 18 | Crawl worker pool (sync path) | ✅ `pipeline.max_concurrent_total` | a hanging host holds one slot, not one thread per URL |
+| 19 | `Crawl-delay` / `Request-rate` from robots.txt | ✅ always | the per-domain hint now throttles that domain; a cache hit does not sleep at all |
+| 20 | Checkpoints: rate limit + append-only journal | ✅ `pipeline.min_checkpoint_seconds`, `state.json.journal` | O(new URLs) per checkpoint instead of O(all URLs) |
+| 21 | GUI: bounded log/table, stats off the GUI thread | ✅ always | long runs no longer grow memory or freeze the window |
 
 ---
 
@@ -346,7 +376,7 @@ design, not benchmarks — measured numbers are welcome as PRs.
 | K | YAML editor | Syntax highlighting (VS Code-style) |
 | L | Dashboard | 3 charts + text summary |
 | M | First-run wizard | 5 steps: sources → quality → tokens |
-| N | Localization RU/EN | 40+ translatable strings |
+| N | Localization RU/EN | 276 strings referenced from code (catalogue: 345) + 90 dialog texts translated by their Russian source (`trl`); tests fail if any of them lacks a translation or if a dialog keeps a hardcoded Russian literal |
 | O | Material Design themes | Blue, Green, Purple |
 
 ---
@@ -367,6 +397,64 @@ design, not benchmarks — measured numbers are welcome as PRs.
 10. **🎨 Interface** — progress bar, theme, logging
 
 Open: `Ctrl+,` or menu Settings → All Settings...
+
+### Presets
+
+Four built-in profiles cover the usual cases, plus “Save as preset…” for your own
+(`~/.corpus_builder_presets.json`). Applying a preset is an ordinary settings edit:
+its fields become “changed by me”, so they override config.yaml honestly (see the
+priority switch below) instead of silently winning.
+
+| Preset | What it sets |
+|---|---|
+| **polite** — someone else's site | delay 5 s, robots.txt respected, async off, conservative page caps |
+| **own_site** — your own site | delay 0, HTTP cache on, rare checkpoints, async on (4 per domain) |
+| **academic** — arXiv/Crossref/DOAJ/Wikipedia/GitHub docs | delay 1 s, timeout 60 s, OCR + tables on, images off, prose-friendly quality |
+| **big_corpus** — hundreds of thousands of URLs | streaming + incremental dedup, gzip, parallel post-processing, checkpoints every 200 URLs / 30 s, log level WARNING |
+
+```bash
+corpus-builder preset                            # list
+corpus-builder preset academic                   # show the fields
+corpus-builder preset academic --apply           # same as the dialog button
+corpus-builder preset big_corpus --yaml ov.yaml  # YAML overlay for your config.yaml
+```
+
+Defaults, `gui.*` state and secret fields are never captured into a preset, and a
+preset whose value the engine would reject is not applied at all — the validation
+error is shown instead of a half-applied profile.
+
+### Secrets (GitHub token, StackExchange key)
+
+Prefer environment variables — then the GUI stores nothing secret at all:
+
+```bash
+export GITHUB_TOKEN=ghp_...          # github_repo crawler
+export STACKEXCHANGE_KEY=...         # stackexchange crawler
+```
+
+If you type them into the settings dialog, they go to `~/.corpus_builder_settings.json`,
+written with `0600` (owner-only; an existing world-readable file gets its mode fixed).
+The fields are masked in the dialog, and **Settings → Export** redacts every
+`*_token` / `*_api_key` / `*_password` / `*_secret` field by default and asks before
+writing them — a settings export is exactly the file people paste into issues.
+
+### Which value wins: config.yaml or the settings dialog?
+
+Both can name the same option (delay, quality thresholds, OCR workers…), so the
+dialog has an explicit **Priority over config.yaml** switch:
+
+| Mode | Behaviour |
+|---|---|
+| **Only what I changed** (default) | fields you edited in the dialog override config.yaml; everything else comes from the file |
+| **config.yaml wins** | the dialog is a viewer — GUI settings override nothing |
+| **All GUI settings** | legacy behaviour: every GUI value is applied over the file |
+
+What actually reaches the engine is not a mystery: `Ctrl+Shift+E` shows the effective
+config and who overrode it, every run logs how many fields the GUI applied and which
+of them were overridden *without* your explicit edit. GUI field defaults are kept equal
+to the engine defaults (a test enforces it), so an untouched dialog cannot change a
+run. Settings files written before this switch existed are migrated once — their
+non-default values are marked as edited — and the log says so.
 
 ---
 

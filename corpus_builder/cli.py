@@ -29,7 +29,7 @@ def cli(ctx, config: str, verbose: bool):
         # многострочный дамп pydantic в консоли нечитаем — оставляем первую строку
         detail = str(e).strip().splitlines() or ["не известна"]
         ctx.meta["config_error"] = f"{type(e).__name__}: {detail[0]}"
-        if (ctx.invoked_subcommand or "") not in ("validate", "schema"):
+        if (ctx.invoked_subcommand or "") not in ("validate", "schema", "preset"):
             click.echo(f"Ошибка конфигурации {config}: {ctx.meta['config_error']}",
                        err=True)
             raise SystemExit(2)
@@ -152,6 +152,75 @@ def stats_cmd(cfg):
         "state_file": str(cfg.output.state_file),
     }
     click.echo(json_dump(out))
+
+
+@cli.command(name="preset")
+@click.argument("key", required=False, default=None)
+@click.option("--apply", "apply_", is_flag=True,
+              help="Применить пресет к настройкам приложения (как в диалоге)")
+@click.option("--yaml", "yaml_out", default=None, metavar="FILE",
+              help="Записать поля пресета как YAML-накидку к config.yaml")
+def preset_cmd(key, apply_, yaml_out):
+    """Готовые профили: polite / own_site / academic / big_corpus (+ свои).
+
+    Без KEY — список. `preset academic` — показать поля. `--apply` — применить к
+    настройкам GUI, `--yaml ФАЙЛ` —.dump накидку, которую можно слить с
+    config.yaml (команда `merge-configs`, если она у вас есть).
+    """
+    from .presets import all_presets, apply_preset, preset_by_key, validate_preset
+
+    if not key:
+        click.echo(json_dump([{"key": p.key, "title": p.title, "builtin": p.builtin,
+                               "description": p.description, "fields": len(p.values)}
+                              for p in all_presets()]))
+        click.echo("показать: corpus-builder preset KEY | применить: --apply")
+        return
+
+    preset = preset_by_key(key)
+    if preset is None:
+        known = ", ".join(p.key for p in all_presets())
+        raise SystemExit(f"неизвестный пресет: {key} (известны: {known})")
+    problems = validate_preset(preset)
+    if problems:
+        raise SystemExit("пресет не применим: " + "; ".join(problems))
+
+    if apply_:
+        from .app_settings import AppSettings
+        settings = AppSettings.load()
+        changed = apply_preset(settings, preset.key)
+        settings.save()
+        click.echo(f"Пресет «{preset.title}» применён: изменено полей — {len(changed)}")
+        click.echo(json_dump(sorted(changed)))
+        return
+
+    if yaml_out:
+        import yaml as _yaml
+
+        from .app_settings import AppSettings
+        targets = dict(AppSettings().mapping())
+        tree: dict = {}
+        skipped = []
+        for path, value in preset.values.items():
+            if path not in targets or path.startswith("gui."):
+                skipped.append(path)
+                continue
+            parts = targets[path].split(".")
+            node = tree
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = value
+        header = (f"# Накладка пресета «{preset.title}»: {preset.description}\n"
+                  f"# Полей без места в config.yaml пропущено: "
+                  f"{', '.join(skipped) if skipped else 'нет'}\n")
+        Path(yaml_out).write_text(
+            header + _yaml.safe_dump(tree, allow_unicode=True, sort_keys=False),
+            encoding="utf-8")
+        click.echo(f"Накидка пресета «{preset.title}» записана: {yaml_out}")
+        return
+
+    click.echo(json_dump({"key": preset.key, "title": preset.title,
+                          "description": preset.description,
+                          "values": preset.values}))
 
 
 @cli.command()

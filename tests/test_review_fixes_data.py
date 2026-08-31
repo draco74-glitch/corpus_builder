@@ -256,8 +256,9 @@ def test_prompts_come_from_variations_not_hardcoded_language(tmp_path):
     run_extract_pairs(src, out)
     prompts = [json.loads(l)["prompt"] for l in out.read_text().splitlines()]
     assert prompts
-    registered = set().union(*(set(pv.list_variations(t)) for t in
+    variations = set().union(*(set(pv.list_variations(t)) for t in
                                ("article_summary", "article_expansion")))
+    assert variations, "у этих типов не осталось ни одного шаблона"
     assert any(any(t in p for t in ("Summar", "summar", "TL;DR", "Expand", "Write a detailed"))
                for p in prompts), prompts
 
@@ -439,3 +440,83 @@ def test_i18n_every_used_key_is_translated():
         table = TRANSLATIONS[lang]
         missing = {k: sorted(v) for k in used if k not in table for v in [used[k]]}
         assert not missing, f"нет перевода ({lang}): {missing}"
+
+
+# ==================================================== Б7: переводы литералов
+
+DIALOG_METHODS = {"information", "warning", "critical", "question", "about"}
+
+
+def _chain(node):
+    import ast
+
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _gui_sources():
+    from pathlib import Path
+
+    return sorted(p for p in Path("corpus_builder").rglob("*.py")
+                  if p.name != "literal_translations.py")
+
+
+def test_no_cyrillic_literals_left_in_dialogs():
+    """Ни одного QMessageBox с зашитой русской строкой (Б7).
+
+    Пока такие литералы есть, переключатель RU/EN врёт: половина окон говорит по-
+    английски, половина — по-русски, и починить это «переводом ключей» нельзя.
+    """
+    import ast
+
+    def has_cyr(text):
+        return any(0x0410 <= ord(ch) <= 0x0450 for ch in text)
+
+    bad = []
+    for f in _gui_sources():
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            base, _, meth = _chain(node.func).rpartition(".")
+            if base != "QMessageBox" or meth not in DIALOG_METHODS:
+                continue
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
+                        and has_cyr(arg.value):
+                    bad.append(f"{f.name}:{node.lineno}: {arg.value[:40]!r}")
+                elif isinstance(arg, ast.JoinedStr):
+                    text = "".join(str(x.value) for x in arg.values
+                                   if isinstance(x, ast.Constant))
+                    if has_cyr(text):
+                        bad.append(f"{f.name}:{node.lineno}: f{text[:40]!r}")
+    assert not bad, "диалоги с зашитым русским: " + "; ".join(bad[:10])
+
+
+def test_every_trl_literal_has_english_and_same_placeholders():
+    """Каждый trl("…") переведён, и {0}-плейсхолдеры совпадают с оригиналом."""
+    import ast
+    import re
+
+    from corpus_builder.literal_translations import EN
+
+    used = set()
+    for f in _gui_sources():
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "trl"
+                    and node.args and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                used.add(node.args[0].value)
+    assert len(used) > 50, f"странно мало литералов: {len(used)}"
+
+    missing = sorted(k for k in used if k not in EN)
+    assert not missing, f"нет English-перевода: {missing[:5]}"
+
+    ph = lambda text: sorted(re.findall(r"\{\d+\}", text))     # noqa: E731
+    for key, value in EN.items():
+        assert ph(key) == ph(value), f"плейсхолдеры разъехались: {key[:40]!r} → {value[:40]!r}"
+    assert all(value.strip() for value in EN.values()), "пустой перевод"

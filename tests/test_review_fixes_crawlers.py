@@ -122,6 +122,7 @@ def test_c5_toast_display_does_not_shadow_qwidget_show():
     from corpus_builder.gui_improvements import ToastNotification
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    assert app is not None, "без QApplication виджеты не живут"
     parent = QtWidgets.QWidget()
     toast = ToastNotification.display(parent, "Заголовок", "Текст",
                                       ToastNotification.INFO)
@@ -641,11 +642,10 @@ def test_pdf_tables_parse_the_document_once(tmp_path, monkeypatch):
 
 def test_schematic_filter_fails_closed_without_tesseract(monkeypatch):
     """Без tesseract каждая картинка попадала в downloaded_files (I12)."""
-    PIL = pytest.importorskip("PIL", reason="Pillow required")
-    import PIL.Image
+    Image = pytest.importorskip("PIL.Image", reason="Pillow required")
     monkeypatch.setattr(PdfCrawler, "_tesseract_checked", True, raising=False)
     monkeypatch.setattr(PdfCrawler, "_tesseract_available", False, raising=False)
-    img = PIL.Image.new("RGB", (600, 400), "white")
+    img = Image.new("RGB", (600, 400), "white")
     assert PdfCrawler._is_image_schematic(img, ["figure"]) is False
 
 
@@ -655,7 +655,7 @@ def test_pdf_document_closed_in_finally(tmp_path, monkeypatch):
                                         extract_tables=False, filter_schematic_images=False,
                                         use_toc_as_structure=False)
     crawler = PdfCrawler(cfg)
-    path = make_pdf(tmp_path, "x.pdf", [single_col_blocks()])
+    make_pdf(tmp_path, "x.pdf", [single_col_blocks()])
     import pymupdf
     real_open = pymupdf.open
     opened = {"n": 0}
@@ -677,8 +677,7 @@ def test_pdf_document_closed_in_finally(tmp_path, monkeypatch):
     monkeypatch.setattr("corpus_builder.crawlers.pdf_crawler.fitz.open", counting_open)
     monkeypatch.setattr(crawler, "_extract_tables_all", staticmethod(lambda p: []),
                         raising=False)
-    # заставляем путь краулера: скачивание уже есть на диске
-    record = crawler._crawl("file://" + path) if False else None
+    # проверяем путь краулера по исходнику finally-блока (выше — счётчик open())
     src = (REPO_ROOT / "corpus_builder" / "crawlers" / "pdf_crawler.py").read_text("utf-8")
     i_finally = src.index("finally:")
     assert "doc.close()" in src[i_finally:i_finally + 200]

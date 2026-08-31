@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .gui_improvements import tr
+from .gui_improvements import tr, trl
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -206,8 +206,8 @@ class MergeConfigDialog(QDialog):
 
     def _on_merge(self):
         if len(self._files) < 2:
-            QMessageBox.warning(self, "Недостаточно файлов",
-                "Добавьте минимум 2 файла для объединения.")
+            QMessageBox.warning(self, trl('Недостаточно файлов'),
+                trl('Добавьте минимум 2 файла для объединения.'))
             return
 
         try:
@@ -237,15 +237,13 @@ class MergeConfigDialog(QDialog):
 
             self.btn_save.setEnabled(len(sources) > 0)
 
-            QMessageBox.information(self, "Объединение завершено",
-                f"Уникальных источников: {stats['total_output']}\n"
-                f"Дубликатов удалено: {stats['duplicates_removed']}\n\n"
-                f"Нажмите «Сохранить» для создания файла."
+            QMessageBox.information(self, trl('Объединение завершено'),
+                trl('Уникальных источников: {0}\nДубликатов удалено: {1}\n\nНажмите «Сохранить» для создания файла.').format(stats['total_output'], stats['duplicates_removed'])
             )
 
         except Exception as e:
             import traceback
-            QMessageBox.critical(self, "Ошибка объединения",
+            QMessageBox.critical(self, trl('Ошибка объединения'),
                 f"{e}\n\n{traceback.format_exc()[:500]}")
 
     def _on_save(self):
@@ -263,13 +261,12 @@ class MergeConfigDialog(QDialog):
         try:
             from .config_generator import build_config
             build_config(self._merged_sources, path)
-            QMessageBox.information(self, "Сохранено",
-                f"Файл сохранён: {path}\n\n"
-                f"Источников: {len(self._merged_sources)}"
+            QMessageBox.information(self, trl('Сохранено'),
+                trl('Файл сохранён: {0}\n\nИсточников: {1}').format(path, len(self._merged_sources))
             )
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка сохранения", str(e))
+            QMessageBox.critical(self, trl('Ошибка сохранения'), str(e))
 
     def _apply_styles(self):
         self.setStyleSheet(f"""

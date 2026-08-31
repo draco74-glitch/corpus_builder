@@ -235,7 +235,9 @@ async def run_async_crawl(
                     errors += 1
 
                 if (idx + 1) % checkpoint_every == 0:
-                    state.save()
+                    # А5: промежуточный чекпойнт дописывает журнал, а не
+                    # переписывает всё состояние
+                    state.save(compact=True)
 
     tasks = [asyncio.create_task(crawl_one(src, i)) for i, src in enumerate(sources)]
     # возвращаем исключения, чтобы один упавший URL не ронял весь ран

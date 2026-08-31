@@ -14,7 +14,9 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+import re
+
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGroupBox,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -36,7 +39,9 @@ from PySide6.QtWidgets import (
 )
 
 from .app_settings import AppSettings
-from .gui_improvements import tr
+from .presets import (all_presets, apply_preset, capture_preset, delete_user_preset,
+                      preset_by_key, save_user_preset, validate_preset)
+from .gui_improvements import tr, trl
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -61,6 +66,19 @@ OVERRIDE_MODE_CHOICES = (
     ("all", "st_override_all"),
 )
 
+def _slug(text: str) -> str:
+    """Ключ пользовательского пресета из названия (латиница/цифры/подчёркивание)."""
+    import unicodedata
+    import zlib
+
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    clean = re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")
+    if not clean:
+        # название целиком кириллическое: ключ должен быть стабильным и юниксальным
+        clean = f"preset_{zlib.crc32(text.encode('utf-8')) & 0xFFFF:04x}"
+    return clean
+
+
 #: варианты авто-стриминга дедупа (А4): «auto» включается сам на крупном корпусе
 AUTO_STREAMING_CHOICES = (
     ("off", "off — всегда грузить целиком"),
@@ -72,6 +90,8 @@ class SettingsDialog(QDialog):
     """Диалоговое окно настроек с вкладками."""
 
     settings_changed = Signal()
+    #: В5: применён пресет (ключ) — главное окно может обновить индикатор
+    preset_applied = Signal(str)
 
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
@@ -174,6 +194,26 @@ class SettingsDialog(QDialog):
             self.combo_override_mode.addItem(tr(key), value)
         self.combo_override_mode.setToolTip(tr("st_override_mode_hint"))
         layout.addRow(tr("st_override_mode"), self.combo_override_mode)
+
+        # В5: готовые профили настроек + «сохранить как пресет»
+        preset_row = QHBoxLayout()
+        self.combo_preset = QComboBox()
+        self.combo_preset.setToolTip(tr("st_preset_hint"))
+        preset_row.addWidget(self.combo_preset, stretch=1)
+        self.btn_preset_apply = QPushButton(tr("st_preset_apply"))
+        self.btn_preset_apply.clicked.connect(self._on_apply_preset)
+        preset_row.addWidget(self.btn_preset_apply)
+        self.btn_preset_save = QPushButton(tr("st_preset_save"))
+        self.btn_preset_save.setProperty("secondary", True)
+        self.btn_preset_save.clicked.connect(self._on_save_preset)
+        preset_row.addWidget(self.btn_preset_save)
+        self.btn_preset_delete = QPushButton(tr("st_preset_delete"))
+        self.btn_preset_delete.setProperty("secondary", True)
+        self.btn_preset_delete.clicked.connect(self._on_delete_preset)
+        preset_row.addWidget(self.btn_preset_delete)
+        layout.addRow(tr("st_presets"), preset_row)
+        self._reload_presets()
+        self.combo_preset.currentIndexChanged.connect(self._refresh_preset_buttons)
 
         # Путь по умолчанию для config.yaml
         self.edit_last_config = QLineEdit()
@@ -863,6 +903,77 @@ class SettingsDialog(QDialog):
     # Обработчики кнопок
     # ============================================================
 
+    # ------------------------------------------------------------- пресеты (В5)
+    def _reload_presets(self, keep: str | None = None) -> None:
+        """Обновить список: встроенные профили + пользовательские."""
+        current = keep or self.combo_preset.currentData()
+        self.combo_preset.blockSignals(True)
+        self.combo_preset.clear()
+        for preset in all_presets():
+            label = preset.title if preset.builtin else f"{preset.title} ★"
+            self.combo_preset.addItem(label, preset.key)
+            self.combo_preset.setItemData(
+                self.combo_preset.count() - 1, preset.description,
+                Qt.ItemDataRole.ToolTipRole)
+        idx = self.combo_preset.findData(current) if current else -1
+        self.combo_preset.setCurrentIndex(idx if idx >= 0 else 0)
+        self.combo_preset.blockSignals(False)
+        self._refresh_preset_buttons()
+
+    def _refresh_preset_buttons(self) -> None:
+        key = self.combo_preset.currentData()
+        preset = preset_by_key(key) if key else None
+        self.btn_preset_delete.setEnabled(bool(preset and not preset.builtin))
+
+    def _on_apply_preset(self) -> None:
+        key = self.combo_preset.currentData()
+        if not key:
+            return
+        try:
+            changed = apply_preset(self.settings, key)
+        except (KeyError, ValueError) as e:
+            QMessageBox.warning(self, tr("st_preset_apply"), str(e))
+            return
+        self._load_values()             # виджеты обязаны показать значения пресета
+        self.preset_applied.emit(key)
+        QMessageBox.information(
+            self, tr("st_preset_apply"),
+            tr("st_preset_applied").replace("{n}", str(len(changed)))
+            + ("\n" + ", ".join(sorted(changed)[:6]) if changed else ""))
+
+    def _on_save_preset(self) -> None:
+        name, ok = QInputDialog.getText(self, tr("st_preset_save"),
+                                        tr("st_preset_name_ask"))
+        if not ok or not name.strip():
+            return
+        key = _slug(name)
+        preset = capture_preset(self.settings, key, name.strip())
+        problems = validate_preset(preset)
+        if problems:
+            QMessageBox.warning(self, tr("st_preset_save"), "\n".join(problems))
+            return
+        try:
+            save_user_preset(preset)
+        except OSError as e:
+            QMessageBox.critical(self, tr("st_preset_save"), str(e))
+            return
+        self._reload_presets(keep=key)
+        QMessageBox.information(self, tr("st_preset_save"),
+                                tr("st_preset_saved").replace("{name}", name.strip())
+                                .replace("{n}", str(len(preset.values))))
+
+    def _on_delete_preset(self) -> None:
+        key = self.combo_preset.currentData()
+        preset = preset_by_key(key) if key else None
+        if preset is None or preset.builtin:
+            return
+        if QMessageBox.question(self, tr("st_preset_delete"),
+                                tr("st_preset_delete_ask").replace("{name}", preset.title)
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        delete_user_preset(key)
+        self._reload_presets()
+
     def _on_save(self) -> None:
         """Сохранить настройки и закрыть окно."""
         self._save_values()
@@ -873,23 +984,23 @@ class SettingsDialog(QDialog):
         self.settings.save()
         self.settings.setup_env_vars()
         self.settings_changed.emit()
-        QMessageBox.information(self, "Сохранено",
-            "Настройки сохранены и будут применены к следующим запускам.")
+        QMessageBox.information(self, trl('Сохранено'),
+            trl('Настройки сохранены и будут применены к следующим запускам.'))
         self.accept()
 
     def _on_reset(self) -> None:
         """Сбросить все настройки к значениям по умолчанию."""
         reply = QMessageBox.question(
-            self, "Сброс настроек",
-            "Сбросить все настройки к значениям по умолчанию?",
+            self, trl('Сброс настроек'),
+            trl('Сбросить все настройки к значениям по умолчанию?'),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply == QMessageBox.Yes:
             from .app_settings import AppSettings
             self.settings = AppSettings()
             self._load_values()
-            QMessageBox.information(self, "Сброшено",
-                "Настройки сброшены. Нажмите «Сохранить» для применения.")
+            QMessageBox.information(self, trl('Сброшено'),
+                trl('Настройки сброшены. Нажмите «Сохранить» для применения.'))
 
     def _on_export(self) -> None:
         """Экспорт настроек в JSON-файл."""
@@ -904,9 +1015,9 @@ class SettingsDialog(QDialog):
             import json
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.settings.to_dict(), f, ensure_ascii=False, indent=2)
-            QMessageBox.information(self, "Экспортировано", f"Настройки сохранены в:\n{path}")
+            QMessageBox.information(self, trl('Экспортировано'), trl('Настройки сохранены в:\n{0}').format(path))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _on_import(self) -> None:
         """Импорт настроек из JSON-файла."""
@@ -923,10 +1034,10 @@ class SettingsDialog(QDialog):
                 data = json.load(f)
             self.settings = AppSettings._from_dict(data)
             self._load_values()
-            QMessageBox.information(self, "Импортировано",
-                "Настройки загружены. Нажмите «Сохранить» для применения.")
+            QMessageBox.information(self, trl('Импортировано'),
+                trl('Настройки загружены. Нажмите «Сохранить» для применения.'))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            QMessageBox.critical(self, trl('Ошибка'), str(e))
 
     def _browse_file(self, edit: QLineEdit, title: str, filter: str) -> None:
         path, _ = QFileDialog.getOpenFileName(self, title, "", filter)

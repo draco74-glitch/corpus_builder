@@ -205,3 +205,48 @@ def test_main_window_keeps_loaded_config_pure(qapp, monkeypatch, tmp_path):
     eff2 = window._build_effective_config()
     assert eff2.output.request_delay == pytest.approx(7.5), "режим «файл важнее»"
     window.close()
+
+
+def test_status_bar_reflects_journal_only_checkpoint(qapp, monkeypatch, tmp_path):
+    """А5: чекпойнт живёт в журнале — строка состояния обязана это видеть.
+
+    Плюс проверка, что `_refresh_status` не прячет собственные ошибки: раньше
+    там был `except Exception: pass`, и опечатка в методе выглядела как
+    «счётчики просто не обновляются».
+    """
+    import corpus_builder.gui as G
+
+    _no_modals(monkeypatch)
+    window = G.MainWindow()
+    cfg_file = tmp_path / "c.yaml"
+    cfg_file.write_text(
+        'sources:\n  - {url: "http://x", type: html}\n'
+        'output: {corpus_file: "%s/raw.jsonl", download_dir: "%s/dl"}\n'
+        % (tmp_path, tmp_path), encoding="utf-8")
+    window.config_edit.setText(str(cfg_file))
+    window._on_config_path_changed()
+
+    from corpus_builder.state import State
+    state = State(tmp_path / "state.json")
+    for i in range(7):
+        state.mark_done(f"http://x/{i}")
+    state.mark_error("http://x/bad")
+    state.save(compact=True)                    # только журнал, снимок не тронут
+    assert not (tmp_path / "state.json").exists()
+
+    window._refresh_status()
+    text = window.status.currentMessage()
+    assert "7" in text and "1" in text, text
+    assert "_refresh_status" in inspect.getsource(G.MainWindow)
+    window.close()
+
+
+import inspect  # noqa: E402  (нужен для проверки исходника метода)
+
+
+def test_refresh_status_does_not_swallow_errors_silently():
+    import corpus_builder.gui as G
+
+    src = inspect.getsource(G.MainWindow._refresh_status)
+    assert "except Exception:" not in src.replace("except Exception as e:", ""), \
+        "голый except пряжет поломку строки состояния"
