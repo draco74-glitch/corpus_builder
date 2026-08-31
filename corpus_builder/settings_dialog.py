@@ -54,6 +54,20 @@ TEXT_SECONDARY = "#858585"
 BORDER = "#3c3c3c"
 
 
+#: режимы приоритета над config.yaml (Б); подписи — ключи перевода
+OVERRIDE_MODE_CHOICES = (
+    ("touched", "st_override_touched"),
+    ("file", "st_override_file"),
+    ("all", "st_override_all"),
+)
+
+#: варианты авто-стриминга дедупа (А4): «auto» включается сам на крупном корпусе
+AUTO_STREAMING_CHOICES = (
+    ("off", "off — всегда грузить целиком"),
+    ("auto", "auto — стримить, если корпус крупнее порога"),
+    ("force", "force — всегда стримить (экономия RAM)"),
+)
+
 class SettingsDialog(QDialog):
     """Диалоговое окно настроек с вкладками."""
 
@@ -62,6 +76,8 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self.settings = settings
+        #: Б: снимок «до», чтобы при сохранении отметить только тронутые поля
+        self._open_snapshot = settings.snapshot()
         self.setWindowTitle(tr("settings_title"))
         self.resize(700, 600)
         self._build_ui()
@@ -151,6 +167,13 @@ class SettingsDialog(QDialog):
         self.combo_log_level = QComboBox()
         self.combo_log_level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         layout.addRow("Уровень логирования:", self.combo_log_level)
+
+        # Б: явный выбор «кто важнее» — config.yaml или эти настройки
+        self.combo_override_mode = QComboBox()
+        for value, key in OVERRIDE_MODE_CHOICES:
+            self.combo_override_mode.addItem(tr(key), value)
+        self.combo_override_mode.setToolTip(tr("st_override_mode_hint"))
+        layout.addRow(tr("st_override_mode"), self.combo_override_mode)
 
         # Путь по умолчанию для config.yaml
         self.edit_last_config = QLineEdit()
@@ -265,6 +288,15 @@ class SettingsDialog(QDialog):
         self.spin_checkpoint = QSpinBox()
         self.spin_checkpoint.setRange(1, 1000)
         layout.addRow("Сохранять чекпойнт каждые:", self.spin_checkpoint)
+
+        self.spin_min_checkpoint = QDoubleSpinBox()
+        self.spin_min_checkpoint.setRange(0.0, 600.0)
+        self.spin_min_checkpoint.setSingleStep(0.5)
+        self.spin_min_checkpoint.setDecimals(1)
+        self.spin_min_checkpoint.setSuffix(" с")
+        self.spin_min_checkpoint.setToolTip(
+            "Не переписывать state.json чаще этого интервала (0 = на каждом чекпойnte)")
+        layout.addRow("Минимальный интервал чекпойнта:", self.spin_min_checkpoint)
 
         return tab
 
@@ -522,6 +554,17 @@ class SettingsDialog(QDialog):
         self.chk_streaming = QCheckBox(tr("st_streaming"))
         layout.addRow(self.chk_streaming)
 
+        self.combo_auto_streaming = QComboBox()
+        for value, label in AUTO_STREAMING_CHOICES:
+            self.combo_auto_streaming.addItem(label, value)
+        layout.addRow(tr("st_auto_streaming"), self.combo_auto_streaming)
+
+        self.spin_streaming_mb = QSpinBox()
+        self.spin_streaming_mb.setRange(16, 65536)
+        self.spin_streaming_mb.setSingleStep(64)
+        self.spin_streaming_mb.setSuffix(" МБ")
+        layout.addRow(tr("st_streaming_threshold"), self.spin_streaming_mb)
+
         self.chk_incremental = QCheckBox(tr("st_incremental"))
         layout.addRow(self.chk_incremental)
 
@@ -637,7 +680,13 @@ class SettingsDialog(QDialog):
         self.chk_browser_headers.setChecked(s.crawl.use_browser_headers)
         self.chk_use_proxy.setChecked(s.crawl.use_proxy)
         self.edit_proxy_list.setPlainText(s.crawl.proxy_list)
+        idx = self.combo_override_mode.findData(s.override_mode())
+        self.combo_override_mode.setCurrentIndex(idx if idx >= 0 else 0)
         self.spin_checkpoint.setValue(s.crawl.save_checkpoint_every)
+        self.spin_min_checkpoint.setValue(s.crawl.min_checkpoint_seconds)
+        idx = self.combo_auto_streaming.findData(s.dedup.auto_streaming)
+        self.combo_auto_streaming.setCurrentIndex(idx if idx >= 0 else 1)
+        self.spin_streaming_mb.setValue(s.dedup.auto_streaming_threshold_mb)
 
         # HTML
         self.combo_html_mode.setCurrentText(s.html.extract_mode)
@@ -732,7 +781,11 @@ class SettingsDialog(QDialog):
         s.crawl.proxy_list = self.edit_proxy_list.toPlainText()
         s.crawl.contact_email = self.edit_contact_email.text().strip()
         s.crawl.contact_email = self.edit_contact_email.text().strip()
+        s.set_override_mode(self.combo_override_mode.currentData())
         s.crawl.save_checkpoint_every = self.spin_checkpoint.value()
+        s.crawl.min_checkpoint_seconds = self.spin_min_checkpoint.value()
+        s.dedup.auto_streaming = self.combo_auto_streaming.currentData()
+        s.dedup.auto_streaming_threshold_mb = self.spin_streaming_mb.value()
 
         # HTML
         s.html.extract_mode = self.combo_html_mode.currentText()
@@ -808,6 +861,10 @@ class SettingsDialog(QDialog):
     def _on_save(self) -> None:
         """Сохранить настройки и закрыть окно."""
         self._save_values()
+        # Б: помечаем поля, которые пользователь правил В ЭТОМ диалоге. Только
+        # они в режиме «touched» получают право перекрывать config.yaml.
+        self.settings.mark_touched(self.settings.diff_from_snapshot(self._open_snapshot))
+        self._open_snapshot = self.settings.snapshot()
         self.settings.save()
         self.settings.setup_env_vars()
         self.settings_changed.emit()

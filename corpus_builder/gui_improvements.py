@@ -1614,6 +1614,17 @@ TRANSLATIONS = {
         "cfg_where": "«→» означает: значение из файла заменено значением из настроек приложения. Отключить: Настройки → «Не перекрывать config.yaml».",
         "cfg_no_overrides": " config.yaml не перекрывается — эффективный конфиг совпадает с файлом",
         "cfg_valid": "Конфигурация корректна",
+        "cfg_applied_fields": "Настройки GUI применились к {n} поле(ям) конфига "
+                              "(режим: {mode})",
+        "cfg_unchosen_warn": "Из настроек GUI без вашего участия перекрывают "
+                             "config.yaml: {fields}. Режим приоритета меняется в "
+                             "диалоге настроек; что уедет в движок — Ctrl+Shift+E.",
+        "cfg_legacy_migration": "Файл настроек старше учёта приоритета: {n} поле(ей) "
+                                "помечены изменёнными и перекрывают config.yaml. "
+                                "Включите «config.yaml важнее» в диалоге настроек, "
+                                "если это не то, что вы хотели.",
+        "cfg_none_applied": "Настройки GUI не перекрывают config.yaml "
+                            "(режим: {mode})",
         "export_secrets_ask": "В файле настроек есть заполненные секреты ({n}). "
                               "Экспортировать их как есть?",
         "export_secrets_hidden": "Скрыты поля с секретами: {fields}. "
@@ -1672,6 +1683,19 @@ TRANSLATIONS = {
         "st_dedup_exact": "Точная дедупликация (sha1)",
         "st_dedup_minhash": "Нечёткая дедупликация (MinHash LSH)",
         "st_dedup_images": "Дедупликация изображений (sha1)",
+        "st_auto_streaming": "Авто-стриминг дедупа",
+        "st_streaming_threshold": "Порог авто-стриминга",
+        "st_override_mode": "Приоритет над config.yaml",
+        "st_override_mode_hint": (
+            "«Только изменённые мною» — из этих настроек в прогон уезжает то, "
+            "что вы правили в этом диалоге (и то, что отличается от значений по "
+            "умолчанию); остальное берётся из config.yaml.\n"
+            "«config.yaml важнее» — настройки GUI не перекрывают файл вовсе.\n"
+            "«Все настройки GUI» — прежнее поведение: накладывается всё, файл "
+            "для этих полей игнорируется."),
+        "st_override_touched": "Только изменённые мною (рекомендуется)",
+        "st_override_file": "config.yaml важнее (GUI ничего не перекрывает)",
+        "st_override_all": "Все настройки GUI (перекрывают файл)",
         "st_streaming": "Streaming MinHash (для больших корпусов, экономит RAM)",
         "st_incremental": "Incremental dedup (сохранять LSH-индекс между прогонами)",
         "st_async": "Использовать асинхронный краулинг по умолчанию",
@@ -1969,6 +1993,16 @@ TRANSLATIONS = {
         "cfg_where": "“→” means the file value was replaced by the app setting. Disable: Settings → “Don't override config.yaml”.",
         "cfg_no_overrides": "config.yaml is not overridden — the effective config matches the file",
         "cfg_valid": "Configuration is valid",
+        "cfg_applied_fields": "GUI settings applied to {n} config field(s) "
+                              "(mode: {mode})",
+        "cfg_unchosen_warn": "GUI settings override config.yaml without your "
+                             "explicit edit: {fields}. Change priority in the "
+                             "settings dialog; see what runs — Ctrl+Shift+E.",
+        "cfg_legacy_migration": "Settings file predates priority tracking: {n} "
+                                "field(s) marked as changed override config.yaml. "
+                                "Choose “config.yaml wins” in the settings dialog "
+                                "if that is not what you meant.",
+        "cfg_none_applied": "GUI settings do not override config.yaml (mode: {mode})",
         "export_secrets_ask": "The settings file has {n} filled secret(s). "
                               "Export them as-is?",
         "export_secrets_hidden": "Secret field(s) hidden: {fields}. "
@@ -2026,6 +2060,19 @@ TRANSLATIONS = {
         "st_dedup_exact": "Exact deduplication (sha1)",
         "st_dedup_minhash": "Fuzzy deduplication (MinHash LSH)",
         "st_dedup_images": "Image deduplication (sha1)",
+        "st_auto_streaming": "Dedup auto-streaming",
+        "st_streaming_threshold": "Auto-streaming threshold",
+        "st_override_mode": "Priority over config.yaml",
+        "st_override_mode_hint": (
+            "“Only what I changed” — of these settings, only what you edited in "
+            "this dialog (and what differs from defaults) reaches the run; the "
+            "rest comes from config.yaml.\\n"
+            "“config.yaml wins” — GUI settings never override the file.\\n"
+            "“All GUI settings” — old behaviour: everything is applied, the file "
+            "is ignored for those fields."),
+        "st_override_touched": "Only what I changed (recommended)",
+        "st_override_file": "config.yaml wins (GUI overrides nothing)",
+        "st_override_all": "All GUI settings (override the file)",
         "st_streaming": "Streaming MinHash (for large corpora, saves RAM)",
         "st_incremental": "Incremental dedup (persist LSH index between runs)",
         "st_async": "Use async crawling by default",

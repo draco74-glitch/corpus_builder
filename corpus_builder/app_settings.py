@@ -102,7 +102,9 @@ def _split_csv(value: str | list | None) -> list[str]:
 
 @dataclass
 class CrawlSettings:
-    user_agent: str = "CorpusBuilder/0.2 (research)"
+    # Б: значения по умолчанию сверены с движком (AppConfig): иначе в режиме
+    # «все настройки GUI» молча уезжает устаревший UA вместо актуального
+    user_agent: str = "CorpusBuilder/0.2.1"
     request_timeout: int = 30
     request_delay: float = 2.0
     max_file_size_mb: int = 50
@@ -112,11 +114,14 @@ class CrawlSettings:
     revalidate_cached_files: bool = True
     use_proxy: bool = False
     proxy_list: str = ""
-    use_browser_headers: bool = True
+    use_browser_headers: bool = False
     respect_robots_txt: bool = True
     #: контакт для «polite» API (Crossref/Wikipedia требуют mailto в UA)
     contact_email: str = ""
     save_checkpoint_every: int = 50
+    #: не писать state чаще этого интервала (А: чекпойнт на каждом источнике
+    #: при 50-тысячном списке = сотни переписываний одного и того же JSON)
+    min_checkpoint_seconds: float = 5.0
     progress_bar: bool = True
     per_url_timeout_minutes: float = 10.0  # таймаут на один URL
 
@@ -144,7 +149,7 @@ class PdfCrawlerSettings:
     ocr_lang: str = "rus+eng"
     ocr_min_chars_per_page: int = 50
     #: сколько страниц гонять через tesseract параллельно (1 = последовательно)
-    ocr_parallel_workers: int = 4
+    ocr_parallel_workers: int = 1
     image_min_width: int = 300
     image_min_height: int = 200
     extract_tables: bool = False
@@ -172,8 +177,8 @@ class GithubCrawlerSettings:
 class StackExchangeSettings:
     api_key: str = ""
     site: str = "electronics"
-    min_score: int = 5
-    max_questions: int = 100
+    min_score: int = 0
+    max_questions: int = 10
 
 
 @dataclass
@@ -199,6 +204,9 @@ class DedupSettings:
     minhash_threshold: float = 0.85
     dedup_images: bool = True
     use_streaming: bool = False
+    #: А4: «auto» включает стриминг сам, когда корпус не влезает в RAM
+    auto_streaming: str = "auto"
+    auto_streaming_threshold_mb: int = 256
     use_incremental: bool = False
     #: порог схожести для инкрементального дедупа (0 = как minhash_threshold)
     incremental_score_threshold: int = 0
@@ -210,6 +218,19 @@ class ExportSettings:
     parallel_postproc: bool = False
     parallel_workers: int = 0
 
+
+#: «*» = применять все настройки (легаси-поведение до введения учёта)
+APPLY_ALL_OVERRIDES = "*"
+
+#: Б: кто важнее — config.yaml или настройки GUI.
+#: «file»   — GUI не перекрывает файл вообще ( краулинг = что написано в YAML)
+#: «touched»— только поля, которые пользователь реально правил в диалоге
+#: «all»    — все настройки GUI (поведение до появления учёта, значения по
+#:            умолчанию файла)
+OVERRIDE_FILE = "file"
+OVERRIDE_TOUCHED = "touched"
+OVERRIDE_ALL = "all"
+OVERRIDE_MODES = (OVERRIDE_FILE, OVERRIDE_TOUCHED, OVERRIDE_ALL)
 
 @dataclass
 class GuiSettings:
@@ -224,6 +245,11 @@ class GuiSettings:
     #: config.yaml. Иначе GUI молча затирая весь YAML дефолтами (проверено:
     #: 6 из 6 полей, выставленных в файле, заменялись значениями по умолчанию).
     ui_overridden: list = field(default_factory=list)
+    #: см. OVERRIDE_* (Б). Легаси-файлы с `ui_overridden: ["*"]` считаются «all».
+    override_mode: str = OVERRIDE_TOUCHED
+    #: служебный флаг: старые файлы настроек один раз помечаем как «тронуто всё,
+    #: что отличается от дефолта» — иначе апгрейд молча обесценит настройки
+    override_migrated: bool = False
     window_width: int = 1280
     window_height: int = 820
     last_config_path: str = ""
@@ -232,12 +258,15 @@ class GuiSettings:
     recent_configs: list = field(default_factory=list)
 
 
-#: «*» = применять все настройки (легаси-поведение до введения учёта)
-APPLY_ALL_OVERRIDES = "*"
+
 
 
 @dataclass
 class AppSettings:
+    #: поля, которые миграция посчитала «тронутыми» (для предупреждения в GUI)
+    legacy_migration_notice: list = field(default_factory=list)
+
+    #: служебное: не участвует в snapshot/mapping
     crawl: CrawlSettings = field(default_factory=CrawlSettings)
     async_crawl: AsyncSettings = field(default_factory=AsyncSettings)
     html: HtmlCrawlerSettings = field(default_factory=HtmlCrawlerSettings)
@@ -303,12 +332,32 @@ class AppSettings:
                           f"не приводится к {hints.get(f.name)}, используем default",
                           file=sys.stderr)
                     setattr(section, f.name, f.default)
+        settings._migrate_legacy_overrides(data or {})
         return settings
+
+    def _migrate_legacy_overrides(self, data: dict) -> None:
+        """Один раз разметить файл настроек старее учёта приоритета (Б).
+
+        До появления `ui_overridden` GUI писал полный снимок, и каждый его
+        «отличающийся от дефолта» поле перекрывало config.yaml. Просто
+        перестать их применять было бы тихой поломкой чужих прогонах, поэтому
+        такие поля помечаем «тронутыми», а пользователя предупреждаем — режим
+        переключается в диалоге настроек.
+        """
+        gui = data.get("gui") or {}
+        if self.gui.override_migrated or "ui_overridden" in gui:
+            return
+        touched = sorted(self.changed_fields())
+        if touched:
+            self.gui.ui_overridden = touched
+        self.gui.override_migrated = True
+        self.legacy_migration_notice = list(touched)
 
     def save(self) -> None:
         path = self._settings_file()
         try:
             data = asdict(self)
+            data.pop("legacy_migration_notice", None)   # состояние одного запуска
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -346,12 +395,66 @@ class AppSettings:
         return {k for k, v in snap.items() if k in defaults and v != defaults[k]}
 
     def overridden_fields(self) -> set[str]:
-        """Что имеет право перекрить config.yaml:
-        явно заданное + то, что отметил диалог (`gui.ui_overridden`)."""
-        cur = set(self.gui.ui_overridden or [])
-        if APPLY_ALL_OVERRIDES in cur:
+        """Что имеет право перекрить config.yaml (зависит от режима, Б)."""
+        mode = self.override_mode()
+        if mode == OVERRIDE_FILE:
+            return set()
+        if mode == OVERRIDE_ALL:
             return {APPLY_ALL_OVERRIDES}
+        # «*» — только легаси-маркер режима, в список «тронутых» он не входит
+        cur = {x for x in (self.gui.ui_overridden or [])
+               if x != APPLY_ALL_OVERRIDES}
+        # Значения, отличные от дефолта, считаются «выбранными пользователем»:
+        # иначе пользователь, который настраивает всё через GUI и не пишет эти
+        # поля в YAML, теряет свои настройки. Про «config.yaml важнее» есть
+        # режим OVERRIDE_FILE, а отличившихся полей список в отчёте (Б).
         return self.changed_fields() | cur
+
+    def override_mode(self) -> str:
+        mode = getattr(self.gui, "override_mode", OVERRIDE_TOUCHED)
+        if APPLY_ALL_OVERRIDES in (self.gui.ui_overridden or []):
+            return OVERRIDE_ALL
+        return mode if mode in OVERRIDE_MODES else OVERRIDE_TOUCHED
+
+    #: поля, которые пользователь точно правил в диалоге (для честного отчёта)
+    def touched_fields(self) -> set[str]:
+        return {x for x in (self.gui.ui_overridden or [])
+                if x != APPLY_ALL_OVERRIDES}
+
+    def unchosen_overrides(self) -> list[str]:
+        """Перекрывают config.yaml «сами собой»: отличается от дефолта, но
+        пользователь этого поля в диалоге не касался."""
+        allowed = self.overridden_fields()
+        if APPLY_ALL_OVERRIDES in allowed:
+            return []
+        targets = dict(self.mapping())
+        return sorted(targets[k] for k in allowed - self.touched_fields()
+                      if k in targets)
+
+    def set_override_mode(self, mode: str) -> None:
+        """Смена режима из диалога; «all» храним через прежний маркер «*»."""
+        if mode not in OVERRIDE_MODES:
+            raise ValueError(f"неизвестный режим приоритета: {mode!r}")
+        self.gui.override_mode = mode
+        if APPLY_ALL_OVERRIDES in (self.gui.ui_overridden or []):
+            # явный выбор режима снимает легаси-маркер, «тронутые» поля остаются
+            self.gui.ui_overridden = [x for x in self.gui.ui_overridden
+                                      if x != APPLY_ALL_OVERRIDES]
+
+    def override_report(self) -> tuple[str, list[str]]:
+        """(режим, список «путь в AppConfig») — для индикатора в GUI."""
+        mode = self.override_mode()
+        if mode == OVERRIDE_FILE:
+            return mode, []
+        allowed = self.overridden_fields()
+        if APPLY_ALL_OVERRIDES in allowed:
+            return mode, []          # перекрывается всё, список не показателен
+        targets = dict(self.setting_map())
+        return mode, sorted(targets[k] for k in allowed if k in targets)
+
+    def setting_map(self) -> list[tuple[str, str]]:
+        """То же, что mapping(), но списком пар (для отчётов)."""
+        return self.mapping()
 
     def mark_touched(self, keys: Iterable[str]) -> None:
         """Диалог настроек: какие поля пользователь правил вручную."""
@@ -361,9 +464,21 @@ class AppSettings:
         cur.update(k for k in keys if k != "gui.ui_overridden")
         self.gui.ui_overridden = sorted(cur)
 
+    def diff_from_snapshot(self, previous: dict) -> list[str]:
+        """Ключи «секция.поле», отличные от снимка ( gui-состояние не считаем)."""
+        cur = self.snapshot()
+        return sorted(k for k in cur
+                      if k in previous and cur[k] != previous[k]
+                      and not k.startswith("gui."))
+
     def compute_overridden_from(self, previous: "AppSettings") -> list[str]:
-        """Разница двух снимков (диалог вызывает её при сохранении)."""
-        return self.gui.ui_overridden | []
+        """Ключи «секция.поле», которые отличаются от снимка `previous`.
+
+        Диалог настроек снимает снимок при открытии и вызывает это при
+        сохранении — так становится известным, что пользователь правил руками
+        (Б), и только эти поля получают право перекрывать config.yaml.
+        """
+        return self.diff_from_snapshot(previous.snapshot())
 
     def clear_ui_overrides(self) -> None:
         self.gui.ui_overridden = []
@@ -446,6 +561,9 @@ class AppSettings:
             ("dedup.minhash_threshold", "dedup.minhash_threshold"),
             ("dedup.dedup_images", "dedup.dedup_images"),
             ("dedup.use_streaming", "dedup.streaming"),
+            ("dedup.auto_streaming", "dedup.auto_streaming"),
+            ("dedup.auto_streaming_threshold_mb", "dedup.auto_streaming_threshold_mb"),
+            ("crawl.min_checkpoint_seconds", "pipeline.min_checkpoint_seconds"),
             ("dedup.use_incremental", "dedup.incremental"),
             ("dedup.incremental_score_threshold", "dedup.incremental_score_threshold"),
         ]

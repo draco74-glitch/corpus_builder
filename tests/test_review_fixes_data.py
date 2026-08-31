@@ -412,3 +412,30 @@ def test_dates_are_timezone_aware():
     from datetime import datetime
     assert datetime.fromisoformat(rec.date_accessed).tzinfo is not None
     assert datetime.fromisoformat(rec.date_accessed).tzinfo == timezone.utc
+
+
+def test_i18n_every_used_key_is_translated():
+    """Ни одного tr("…") без перевода — иначе в GUI всплывает английский/ключ.
+
+    Раньше проверка была только реактивной: лог «Нет перевода для ключа» при
+    запуске. Такой тест ловит недостающий ключ до коммита.
+    """
+    import ast
+    import collections
+    from pathlib import Path
+
+    from corpus_builder.gui_improvements import TRANSLATIONS
+
+    used: dict[str, set[str]] = collections.defaultdict(set)
+    for f in sorted(Path("corpus_builder").rglob("*.py")):
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "tr"
+                    and node.args and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                used[node.args[0].value].add(f.name)
+
+    assert len(used) > 100, f"слишком мало ключей — вероятно, сломался сбор: {len(used)}"
+    for lang in ("ru", "en"):
+        table = TRANSLATIONS[lang]
+        missing = {k: sorted(v) for k in used if k not in table for v in [used[k]]}
+        assert not missing, f"нет перевода ({lang}): {missing}"

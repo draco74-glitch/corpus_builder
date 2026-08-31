@@ -358,6 +358,8 @@ GUI_ONLY_SETTINGS = {
     "dedup.incremental_score_threshold",
     "stackexchange.min_score", "stackexchange.max_questions",
     "gui.ui_overridden",           # служебный список, читается apply_to_config
+    "gui.override_mode",           # режим приоритета, читается apply_to_config
+    "gui.override_migrated",       # флаг миграции легаси-файла настроек
 }
 
 

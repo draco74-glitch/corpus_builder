@@ -473,13 +473,37 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_settings_changed(self) -> None:
-        """Настройки изменились — применяем."""
+        """Настройки изменились — перечитываем и показываем индикатор (Б).
+
+        `self.config` здесь НЕ мутируем: значения настроек накладываются на
+        копию в _build_effective_config() перед каждым запуском. Прежний код
+        один открытый диалог настроек навсегда переписывал загруженный
+        config.yaml внутри GUI — после «Настройки → Сохранить» уже было не
+        понять, что на самом деле в файле (тот же класс бага, что I9).
+        """
         self.app_settings = AppSettings.load()
         self.app_settings.setup_env_vars()
-        # Если есть загруженный config — применяем настройки к нему
-        if self.config:
-            self.app_settings.apply_to_config(self.config)
+        notice = self.app_settings.legacy_migration_notice
+        if notice:
+            # показать один раз: файл настроек старше учёта приоритета
+            self.app_settings.legacy_migration_notice = []
+            self._log("WARNING", tr("cfg_legacy_migration").replace(
+                "{n}", str(len(notice))))
+        self._report_overrides(self.app_settings.override_report(),
+                               self.app_settings.unchosen_overrides())
         self._log("INFO", "Настройки применены")
+
+    def _report_overrides(self, mode_and_applied, unchosen: list[str]) -> None:
+        """Сколько полей конфига перекрывает GUI и какие — «сами собой» (Б)."""
+        mode, applied = mode_and_applied
+        if not applied and mode != "all":
+            self._log("INFO", tr("cfg_none_applied").replace("{mode}", mode))
+        elif applied:
+            self._log("INFO", tr("cfg_applied_fields").replace(
+                "{n}", str(len(applied))).replace("{mode}", mode))
+        if unchosen:
+            self._log("WARNING", tr("cfg_unchosen_warn").replace(
+                "{fields}", ", ".join(unchosen[:8]) + (" …" if len(unchosen) > 8 else "")))
 
     def _export_settings(self) -> None:
         """Экспорт настроек в JSON."""
@@ -1032,8 +1056,12 @@ class MainWindow(QMainWindow):
             cfg.output.state_file = str(out_dir_path / "state.json")
             cfg.output.log_file = str(out_dir_path / "crawl.log")
         # Применяем настройки приложения
-        self.app_settings.apply_to_config(cfg)
+        applied = self.app_settings.apply_to_config(cfg)
         self.app_settings.setup_env_vars()
+        # Б: не немая подмена — пишем, сколько полей перекрыто и почему
+        self._report_overrides(
+            (self.app_settings.override_mode(), applied),
+            self.app_settings.unchosen_overrides())
         ensure_output_dirs(cfg)
         self._save_session()
         return cfg
