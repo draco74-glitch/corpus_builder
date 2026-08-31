@@ -465,7 +465,7 @@ def test_async_deduplicates_same_url_under_concurrency(tmp_path, monkeypatch):
     import asyncio
     import time
     from corpus_builder import async_pipeline
-    from corpus_builder.models import CorpusRecord, SourceItem
+    from corpus_builder.models import CorpusRecord
 
     class SlowCrawler:
         def __init__(self, session=None):
@@ -534,7 +534,6 @@ def test_source_level_ignore_robots_skips_check(tmp_path, monkeypatch):
 def test_robots_denied_url_is_not_marked_done(tmp_path, monkeypatch):
     """«Запрещено» ≠ «обработано»: источник должен остаться в выборке."""
     from corpus_builder import pipeline
-    from corpus_builder.models import CorpusRecord
 
     class DenyingRobots:
         respect = True
@@ -633,11 +632,12 @@ def test_incremental_dedup_second_run_is_cheap(tmp_path):
     src = _stream_corpus(tmp_path)
     cfg = DedupConfig(exact=False, minhash=True, dedup_images=False, incremental=True,
                       incremental_index_file=str(tmp_path / "idx.pkl"))
-    _stats1, dups1 = run_dedup_adaptive(src, tmp_path / "o1.jsonl", cfg), None
+    first = run_dedup_adaptive(src, tmp_path / "o1.jsonl", cfg)
     second = run_dedup_adaptive(src, tmp_path / "o2.jsonl", cfg)
     assert Path(cfg.incremental_index_file).exists()
-    # второй прогон: все URL уже в индексе → новых дублей не появляется
-    assert second["removed"] >= 0 and second["total"] == _stats1["total"]
+    assert second["total"] == first["total"]
+    # второй прогон по тому же корпусу: дубли уже в индексе, удалённых не больше
+    assert second["removed"] <= first["removed"], (first, second)
 
 
 # ============================================================
@@ -698,7 +698,6 @@ def test_a2_text_normalized_once_per_record(tmp_path):
 
     from corpus_builder.postproc import dedup as dedup_mod
     from corpus_builder.postproc import quality as quality_mod
-    monkey = None
     dedup_mod.normalize_text = counting
     quality_mod.normalize_text = counting
     try:
@@ -766,15 +765,7 @@ def test_a5_stuck_url_does_not_spawn_threads(tmp_path, monkeypatch):
 def test_a5_crawl_delay_from_respected(tmp_path, monkeypatch):
     """A5: Crawl-delay из robots.txt важнее глобального request_delay."""
     import time as _t
-    from corpus_builder.models import AppConfig, CorpusRecord, SourceItem
     from corpus_builder.robots import RateLimiter
-
-    cfg = AppConfig(sources=[SourceItem(url=f"http://d.test/{i}", type="html")
-                             for i in range(3)],
-                    output={"corpus_file": str(tmp_path / "raw.jsonl"),
-                            "download_dir": str(tmp_path / "dl"),
-                            "request_delay": 0.0})
-    delays = {}
 
     def fake_delay(self, url):
         return 0.4

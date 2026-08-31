@@ -1,0 +1,686 @@
+{
+  "$defs": {
+    "CrawlerGitHubConfig": {
+      "properties": {
+        "token_env": {
+          "default": "GITHUB_TOKEN",
+          "title": "Token Env",
+          "type": "string"
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Branch"
+        },
+        "include_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Include Files",
+          "type": "array"
+        },
+        "crawl_issues": {
+          "default": false,
+          "title": "Crawl Issues",
+          "type": "boolean"
+        },
+        "crawl_issues_max": {
+          "default": 50,
+          "title": "Crawl Issues Max",
+          "type": "integer"
+        },
+        "crawl_issues_state": {
+          "default": "all",
+          "title": "Crawl Issues State",
+          "type": "string"
+        },
+        "crawl_wiki": {
+          "default": false,
+          "title": "Crawl Wiki",
+          "type": "boolean"
+        },
+        "crawl_docs_dir": {
+          "default": true,
+          "title": "Crawl Docs Dir",
+          "type": "boolean"
+        },
+        "docs_extensions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Docs Extensions",
+          "type": "array"
+        },
+        "max_archive_mb": {
+          "default": 250,
+          "title": "Max Archive Mb",
+          "type": "integer"
+        },
+        "issues_comments_max": {
+          "default": 20,
+          "title": "Issues Comments Max",
+          "type": "integer"
+        }
+      },
+      "title": "CrawlerGitHubConfig",
+      "type": "object"
+    },
+    "CrawlerHTMLConfig": {
+      "properties": {
+        "extract_mode": {
+          "default": "trafilatura",
+          "enum": [
+            "trafilatura",
+            "bs4"
+          ],
+          "title": "Extract Mode",
+          "type": "string"
+        },
+        "download_images": {
+          "default": true,
+          "title": "Download Images",
+          "type": "boolean"
+        },
+        "image_extensions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Image Extensions",
+          "type": "array"
+        },
+        "download_files_ext": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Download Files Ext",
+          "type": "array"
+        },
+        "max_html_pages": {
+          "default": 0,
+          "title": "Max Html Pages",
+          "type": "integer"
+        }
+      },
+      "title": "CrawlerHTMLConfig",
+      "type": "object"
+    },
+    "CrawlerPDFConfig": {
+      "properties": {
+        "ocr_enabled": {
+          "default": true,
+          "title": "Ocr Enabled",
+          "type": "boolean"
+        },
+        "ocr_lang": {
+          "default": "rus+eng",
+          "title": "Ocr Lang",
+          "type": "string"
+        },
+        "ocr_min_chars_per_page": {
+          "default": 50,
+          "title": "Ocr Min Chars Per Page",
+          "type": "integer"
+        },
+        "ocr_parallel_workers": {
+          "default": 1,
+          "title": "Ocr Parallel Workers",
+          "type": "integer"
+        },
+        "image_min_width": {
+          "default": 300,
+          "title": "Image Min Width",
+          "type": "integer"
+        },
+        "image_min_height": {
+          "default": 200,
+          "title": "Image Min Height",
+          "type": "integer"
+        },
+        "extract_tables": {
+          "default": false,
+          "title": "Extract Tables",
+          "type": "boolean"
+        },
+        "two_column_detection": {
+          "default": true,
+          "title": "Two Column Detection",
+          "type": "boolean"
+        },
+        "two_column_x_threshold": {
+          "default": 0.35,
+          "title": "Two Column X Threshold",
+          "type": "number"
+        },
+        "filter_schematic_images": {
+          "default": true,
+          "title": "Filter Schematic Images",
+          "type": "boolean"
+        },
+        "schematic_keywords": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Schematic Keywords",
+          "type": "array"
+        },
+        "use_toc_as_structure": {
+          "default": true,
+          "title": "Use Toc As Structure",
+          "type": "boolean"
+        }
+      },
+      "title": "CrawlerPDFConfig",
+      "type": "object"
+    },
+    "CrawlerSEConfig": {
+      "properties": {
+        "api_key_env": {
+          "default": "STACKEXCHANGE_KEY",
+          "title": "Api Key Env",
+          "type": "string"
+        },
+        "site": {
+          "default": "electronics",
+          "title": "Site",
+          "type": "string"
+        },
+        "max_list_questions": {
+          "default": 10,
+          "title": "Max List Questions",
+          "type": "integer"
+        },
+        "min_score": {
+          "default": 0,
+          "title": "Min Score",
+          "type": "integer"
+        }
+      },
+      "title": "CrawlerSEConfig",
+      "type": "object"
+    },
+    "CrawlersConfig": {
+      "properties": {
+        "html": {
+          "$ref": "#/$defs/CrawlerHTMLConfig"
+        },
+        "pdf": {
+          "$ref": "#/$defs/CrawlerPDFConfig"
+        },
+        "github": {
+          "$ref": "#/$defs/CrawlerGitHubConfig"
+        },
+        "stackexchange": {
+          "$ref": "#/$defs/CrawlerSEConfig"
+        }
+      },
+      "title": "CrawlersConfig",
+      "type": "object"
+    },
+    "DedupConfig": {
+      "properties": {
+        "exact": {
+          "default": true,
+          "title": "Exact",
+          "type": "boolean"
+        },
+        "minhash": {
+          "default": true,
+          "title": "Minhash",
+          "type": "boolean"
+        },
+        "minhash_num_perm": {
+          "default": 128,
+          "title": "Minhash Num Perm",
+          "type": "integer"
+        },
+        "minhash_threshold": {
+          "default": 0.85,
+          "title": "Minhash Threshold",
+          "type": "number"
+        },
+        "dedup_images": {
+          "default": true,
+          "title": "Dedup Images",
+          "type": "boolean"
+        },
+        "streaming": {
+          "default": false,
+          "title": "Streaming",
+          "type": "boolean"
+        },
+        "auto_streaming": {
+          "default": "auto",
+          "enum": [
+            "off",
+            "auto",
+            "force"
+          ],
+          "title": "Auto Streaming",
+          "type": "string"
+        },
+        "auto_streaming_threshold_mb": {
+          "default": 256,
+          "title": "Auto Streaming Threshold Mb",
+          "type": "integer"
+        },
+        "incremental": {
+          "default": false,
+          "title": "Incremental",
+          "type": "boolean"
+        },
+        "incremental_index_file": {
+          "default": "corpus_output/.dedup_index.pkl",
+          "title": "Incremental Index File",
+          "type": "string"
+        },
+        "incremental_score_threshold": {
+          "default": 0,
+          "title": "Incremental Score Threshold",
+          "type": "integer"
+        }
+      },
+      "title": "DedupConfig",
+      "type": "object"
+    },
+    "ExportConfig": {
+      "description": "Настройки экспорта финального корпуса (впервые подключены к движению).",
+      "properties": {
+        "write_gzip": {
+          "default": false,
+          "title": "Write Gzip",
+          "type": "boolean"
+        },
+        "keep_intermediate": {
+          "default": true,
+          "title": "Keep Intermediate",
+          "type": "boolean"
+        }
+      },
+      "title": "ExportConfig",
+      "type": "object"
+    },
+    "FineTuneConfig": {
+      "description": "Настройки для fine-tuning режима.",
+      "properties": {
+        "max_per_type": {
+          "default": 1000,
+          "title": "Max Per Type",
+          "type": "integer"
+        },
+        "min_prompt_chars": {
+          "default": 20,
+          "title": "Min Prompt Chars",
+          "type": "integer"
+        },
+        "max_prompt_chars": {
+          "default": 8000,
+          "title": "Max Prompt Chars",
+          "type": "integer"
+        },
+        "min_completion_chars": {
+          "default": 20,
+          "title": "Min Completion Chars",
+          "type": "integer"
+        },
+        "max_completion_chars": {
+          "default": 16000,
+          "title": "Max Completion Chars",
+          "type": "integer"
+        },
+        "balance_classes": {
+          "default": true,
+          "title": "Balance Classes",
+          "type": "boolean"
+        },
+        "remove_pii": {
+          "default": true,
+          "title": "Remove Pii",
+          "type": "boolean"
+        },
+        "pii_aggressive": {
+          "default": false,
+          "title": "Pii Aggressive",
+          "type": "boolean"
+        },
+        "formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Formats",
+          "type": "array"
+        }
+      },
+      "title": "FineTuneConfig",
+      "type": "object"
+    },
+    "OutputConfig": {
+      "properties": {
+        "corpus_file": {
+          "title": "Corpus File",
+          "type": "string"
+        },
+        "download_dir": {
+          "title": "Download Dir",
+          "type": "string"
+        },
+        "error_log": {
+          "default": "corpus_output/errors.jsonl",
+          "title": "Error Log",
+          "type": "string"
+        },
+        "state_file": {
+          "default": "corpus_output/state.json",
+          "title": "State File",
+          "type": "string"
+        },
+        "log_file": {
+          "default": "corpus_output/crawl.log",
+          "title": "Log File",
+          "type": "string"
+        },
+        "max_file_size_mb": {
+          "default": 50,
+          "title": "Max File Size Mb",
+          "type": "integer"
+        },
+        "request_delay": {
+          "default": 2.0,
+          "title": "Request Delay",
+          "type": "number"
+        },
+        "request_timeout": {
+          "default": 30,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "user_agent": {
+          "default": "CorpusBuilder/0.2.1",
+          "title": "User Agent",
+          "type": "string"
+        },
+        "contact_email": {
+          "default": "",
+          "title": "Contact Email",
+          "type": "string"
+        },
+        "respect_robots_txt": {
+          "default": true,
+          "title": "Respect Robots Txt",
+          "type": "boolean"
+        },
+        "robots_fail_open": {
+          "default": false,
+          "title": "Robots Fail Open",
+          "type": "boolean"
+        },
+        "revalidate_cached_files": {
+          "default": true,
+          "title": "Revalidate Cached Files",
+          "type": "boolean"
+        },
+        "use_http_cache": {
+          "default": true,
+          "title": "Use Http Cache",
+          "type": "boolean"
+        },
+        "cache_ttl_hours": {
+          "default": 168,
+          "title": "Cache Ttl Hours",
+          "type": "integer"
+        },
+        "use_proxy": {
+          "default": false,
+          "title": "Use Proxy",
+          "type": "boolean"
+        },
+        "use_browser_headers": {
+          "default": false,
+          "title": "Use Browser Headers",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "corpus_file",
+        "download_dir"
+      ],
+      "title": "OutputConfig",
+      "type": "object"
+    },
+    "PipelineConfig": {
+      "properties": {
+        "resume": {
+          "default": true,
+          "title": "Resume",
+          "type": "boolean"
+        },
+        "save_checkpoint_every": {
+          "default": 50,
+          "title": "Save Checkpoint Every",
+          "type": "integer"
+        },
+        "min_checkpoint_seconds": {
+          "default": 5.0,
+          "title": "Min Checkpoint Seconds",
+          "type": "number"
+        },
+        "progress_bar": {
+          "default": true,
+          "title": "Progress Bar",
+          "type": "boolean"
+        },
+        "per_url_timeout_minutes": {
+          "default": 10.0,
+          "title": "Per Url Timeout Minutes",
+          "type": "number"
+        },
+        "use_async": {
+          "default": false,
+          "title": "Use Async",
+          "type": "boolean"
+        },
+        "max_concurrent_total": {
+          "default": 8,
+          "title": "Max Concurrent Total",
+          "type": "integer"
+        },
+        "max_concurrent_per_domain": {
+          "default": 1,
+          "title": "Max Concurrent Per Domain",
+          "type": "integer"
+        },
+        "parallel_postproc": {
+          "default": false,
+          "title": "Parallel Postproc",
+          "type": "boolean"
+        },
+        "parallel_workers": {
+          "default": 0,
+          "title": "Parallel Workers",
+          "type": "integer"
+        }
+      },
+      "title": "PipelineConfig",
+      "type": "object"
+    },
+    "QualityConfig": {
+      "properties": {
+        "min_chars": {
+          "default": 200,
+          "title": "Min Chars",
+          "type": "integer"
+        },
+        "max_chars": {
+          "default": 200000,
+          "title": "Max Chars",
+          "type": "integer"
+        },
+        "max_non_alpha_ratio": {
+          "default": 0.3,
+          "title": "Max Non Alpha Ratio",
+          "type": "number"
+        },
+        "max_dup_line_ratio": {
+          "default": 0.5,
+          "title": "Max Dup Line Ratio",
+          "type": "number"
+        },
+        "language": {
+          "default": "bilingual",
+          "enum": [
+            "bilingual",
+            "ru",
+            "en",
+            "multi"
+          ],
+          "title": "Language",
+          "type": "string"
+        },
+        "languages_allowed": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Languages Allowed",
+          "type": "array"
+        },
+        "max_code_ratio": {
+          "default": 0.5,
+          "title": "Max Code Ratio",
+          "type": "number"
+        },
+        "spam_check": {
+          "default": true,
+          "title": "Spam Check",
+          "type": "boolean"
+        },
+        "perplexity_check": {
+          "default": false,
+          "title": "Perplexity Check",
+          "type": "boolean"
+        },
+        "max_perplexity": {
+          "default": 1000.0,
+          "title": "Max Perplexity",
+          "type": "number"
+        },
+        "perplexity_model_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Perplexity Model Path"
+        }
+      },
+      "title": "QualityConfig",
+      "type": "object"
+    },
+    "SourceItem": {
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "html",
+            "pdf",
+            "github_repo",
+            "stackexchange",
+            "forum",
+            "doaj",
+            "arxiv",
+            "crossref",
+            "wikipedia"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "categories": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Categories",
+          "type": "array"
+        },
+        "include_files": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Include Files"
+        },
+        "download_files": {
+          "default": true,
+          "title": "Download Files",
+          "type": "boolean"
+        },
+        "ignore_robots": {
+          "default": false,
+          "title": "Ignore Robots",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "url",
+        "type"
+      ],
+      "title": "SourceItem",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceItem"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "output": {
+      "$ref": "#/$defs/OutputConfig"
+    },
+    "crawlers": {
+      "$ref": "#/$defs/CrawlersConfig"
+    },
+    "quality": {
+      "$ref": "#/$defs/QualityConfig"
+    },
+    "dedup": {
+      "$ref": "#/$defs/DedupConfig"
+    },
+    "pipeline": {
+      "$ref": "#/$defs/PipelineConfig"
+    },
+    "finetune": {
+      "$ref": "#/$defs/FineTuneConfig"
+    },
+    "export": {
+      "$ref": "#/$defs/ExportConfig"
+    }
+  },
+  "required": [
+    "sources",
+    "output"
+  ],
+  "title": "AppConfig",
+  "type": "object"
+}

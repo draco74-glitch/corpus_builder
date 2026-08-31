@@ -354,12 +354,33 @@ class AppSettings:
         self.legacy_migration_notice = list(touched)
 
     def save(self) -> None:
+        """Записать настройки. Файл содержит токены → права 0600 (В2).
+
+        Файл мог быть создан раньше (или до этого принадлежал другому процессу)
+        с 0644, поэтому режим выставляем и на существующем файле: без этого
+        GitHub-токен читается любым пользователем машины.
+        """
         path = self._settings_file()
         try:
             data = asdict(self)
             data.pop("legacy_migration_notice", None)   # состояние одного запуска
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            try:
+                # 0600 на файле до того, как в него попадёт секрет
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                if os.name != "nt":
+                    os.chmod(tmp, 0o600)
+                os.replace(tmp, path)
+                if os.name != "nt":
+                    os.chmod(path, 0o600)
+            except OSError:
+                # ФС без прав (FAT и пр.) или отказ chmod: пишем как умеем,
+                # но не роняем сохранение настроек
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Warning: cannot save settings: {e}", file=sys.stderr)
 

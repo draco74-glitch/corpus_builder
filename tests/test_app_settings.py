@@ -179,3 +179,36 @@ def test_secret_field_detection_is_narrow():
     assert is_secret_field("client_secret") and is_secret_field("github_access_token")
     assert not is_secret_field("url") and not is_secret_field("max_workers")
     assert not is_secret_field("token_env"), "имя переменной окружения — не секрет"
+
+
+def test_settings_file_is_owner_only(tmp_path):
+    """В2: в этом файле лежат токены → 0600, даже если файл был 0644."""
+    import stat
+    target = tmp_path / "settings.json"
+    target.write_text("{}", encoding="utf-8")
+    os.chmod(target, 0o644)
+    with mock.patch.object(AppSettings, "_settings_file", lambda cls=None: target):
+        s = AppSettings()
+        s.github.token = "ghp_secret"
+        s.save()
+    if os.name != "nt":
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob("*.tmp"))
+    with mock.patch.object(AppSettings, "_settings_file", lambda cls=None: target):
+        assert AppSettings.load().github.token == "ghp_secret"
+
+
+def test_example_config_points_at_the_json_schema():
+    """В4: редактор должен подсказывать схему прямо из примера конфига."""
+    from pathlib import Path
+    text = Path("config.example.yaml").read_text(encoding="utf-8")
+    assert "# yaml-language-server: $schema=" in text.splitlines()[0]
+
+
+def test_committed_schema_matches_the_model():
+    """corpus.schema.json в корне обязан совпадать с моделью (иначе подсказка врёт)."""
+    import json
+    from pathlib import Path
+    from corpus_builder.models import AppConfig
+    committed = json.loads(Path("corpus.schema.json").read_text(encoding="utf-8"))
+    assert committed == json.loads(json.dumps(AppConfig.model_json_schema()))

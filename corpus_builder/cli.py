@@ -350,7 +350,11 @@ def validate_cmd(ctx, config_path, strict):
 @cli.command(name="schema")
 @click.option("--out", "out_path", default=None, help="Записать JSON-схему в файл")
 def schema_cmd(out_path):
-    """JSON-схема конфига (для проверки редакторами / внешними валидаторами)."""
+    """JSON-схема конфига (для проверки редакторами / внешними валидаторами).
+
+    Пример: `corpus-builder schema --out corpus.schema.json` — и redhat.vscode-yaml
+    начнёт подсказывать поля; ссылка на схему стоит в шапке config.example.yaml.
+    """
     import json
     from .models import AppConfig
     schema = json.dumps(AppConfig.model_json_schema(), ensure_ascii=False, indent=2)

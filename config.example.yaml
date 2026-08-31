@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/draco74-glitch/corpus_builder/main/corpus.schema.json
 # ===== Sources =====
 # Тип источника (key `type`) — один из:
 #   html, pdf, github_repo, stackexchange, forum,
