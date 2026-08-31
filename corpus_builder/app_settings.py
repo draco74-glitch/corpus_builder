@@ -10,6 +10,44 @@ from pathlib import Path
 from typing import Iterable, get_type_hints
 
 
+#: значение-заглушка для секретов при экспорте настроек (Б: экспорт JSON
+#: раньше уносил токены наружу — его кидают в issues и пересылают коллегам)
+REDACTED_SECRET = "***redacted***"
+
+_SECRET_NAMES = {"token", "api_key", "password", "secret", "access_token",
+                 "client_secret"}
+_SECRET_SUFFIXES = ("_token", "_api_key", "_password", "_secret")
+
+
+def is_secret_field(name: str) -> bool:
+    n = name.lower()
+    return n in _SECRET_NAMES or n.endswith(_SECRET_SUFFIXES)
+
+
+def secret_paths(settings: "AppSettings") -> list[str]:
+    """Поля вида «секция.поле», где у пользователя реально что-то заполнено."""
+    out = []
+    for sec_name, sec in asdict(settings).items():
+        if not isinstance(sec, dict):
+            continue
+        for key, value in sec.items():
+            if is_secret_field(key) and isinstance(value, str) and value.strip():
+                out.append(f"{sec_name}.{key}")
+    return out
+
+
+def to_export_dict(settings: "AppSettings", redact: bool = True) -> dict:
+    """Снимок настроек для записи в файл. redact=True — секреты под заглушкой."""
+    data = asdict(settings)
+    if redact:
+        for sec in data.values():
+            if isinstance(sec, dict):
+                for key, value in sec.items():
+                    if is_secret_field(key) and isinstance(value, str) and value.strip():
+                        sec[key] = REDACTED_SECRET
+    return data
+
+
 def _coerce_settings_value(value, tp, default):
     """Привести значение из JSON к объявленному типу поля dataclass.
 
@@ -253,6 +291,10 @@ class AppSettings:
                 if f.name not in section_data:
                     continue
                 value = section_data[f.name]
+                if value == REDACTED_SECRET:
+                    # вернули наш же экспорт: секрет в файле намеренно скрыт,
+                    # оставляем то, что уже есть в настройках
+                    continue
                 try:
                     setattr(section, f.name,
                             _coerce_settings_value(value, hints.get(f.name, str), f.default))
@@ -328,6 +370,10 @@ class AppSettings:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def to_export_dict(self, redact: bool = True) -> dict:
+        """Как to_dict, но без секретов по умолчанию (для «Экспорта настроек»)."""
+        return to_export_dict(self, redact=redact)
 
     def mapping(self) -> list[tuple[str, str]]:
         """Таблица соответствия «настройка GUI → путь в AppConfig».

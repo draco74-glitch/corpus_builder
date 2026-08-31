@@ -490,10 +490,29 @@ class MainWindow(QMainWindow):
             return
         try:
             import json
+            from .app_settings import secret_paths
+
             self.app_settings.save()
+            secrets = secret_paths(self.app_settings)
+            redact = True
+            if secrets:
+                # секреты по умолчанию НЕ пишем: файл настроек обычно куда-то
+                # пересылают. Спрашиваем явно, No = безопасный вариант.
+                answer = QMessageBox.question(
+                    self, tr("menu_export_settings"),
+                    tr("export_secrets_ask").replace("{n}", str(len(secrets)))
+                    + "\n" + ", ".join(secrets[:6]),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                redact = answer != QMessageBox.StandardButton.Yes
+            data = self.app_settings.to_export_dict(redact=redact)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.app_settings.to_dict(), f, ensure_ascii=False, indent=2)
-            QMessageBox.information(self, "Экспортировано", f"Настройки сохранены в:\n{path}")
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            msg = tr("exported_to").replace("{path}", path)
+            if redact and secrets:
+                msg += "\n" + tr("export_secrets_hidden").replace(
+                    "{fields}", ", ".join(secrets[:6]))
+            QMessageBox.information(self, "Экспортировано", msg)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
 

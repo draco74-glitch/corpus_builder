@@ -1614,6 +1614,12 @@ TRANSLATIONS = {
         "cfg_where": "«→» означает: значение из файла заменено значением из настроек приложения. Отключить: Настройки → «Не перекрывать config.yaml».",
         "cfg_no_overrides": " config.yaml не перекрывается — эффективный конфиг совпадает с файлом",
         "cfg_valid": "Конфигурация корректна",
+        "export_secrets_ask": "В файле настроек есть заполненные секреты ({n}). "
+                              "Экспортировать их как есть?",
+        "export_secrets_hidden": "Скрыты поля с секретами: {fields}. "
+                                 "Перенесите их вручную или экспортируйте ещё раз "
+                                 "с подтверждением.",
+        "exported_to": "Настройки сохранены в:\n{path}",
         "cfg_valid_title": "Проверка конфигурации",
         "cfg_invalid_title": "Ошибки конфигурации",
         "cfg_invalid_found": "Найдено проблем: {n}",
@@ -1963,6 +1969,11 @@ TRANSLATIONS = {
         "cfg_where": "“→” means the file value was replaced by the app setting. Disable: Settings → “Don't override config.yaml”.",
         "cfg_no_overrides": "config.yaml is not overridden — the effective config matches the file",
         "cfg_valid": "Configuration is valid",
+        "export_secrets_ask": "The settings file has {n} filled secret(s). "
+                              "Export them as-is?",
+        "export_secrets_hidden": "Secret field(s) hidden: {fields}. "
+                                 "Move them manually or export again with confirmation.",
+        "exported_to": "Settings saved to:\n{path}",
         "cfg_valid_title": "Configuration check",
         "cfg_invalid_title": "Configuration errors",
         "cfg_invalid_found": "Problems found: {n}",

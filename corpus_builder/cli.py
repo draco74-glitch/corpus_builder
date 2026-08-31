@@ -1,6 +1,7 @@
 """CLI для corpus-builder."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import click
@@ -19,8 +20,27 @@ def cli(ctx, config: str, verbose: bool):
     """corpus-builder: сбор сырого корпуса для pretraining LLM."""
     from .config import load_config
     setup_logging(Path("corpus_output") / "crawl.log", verbose=verbose)
-    cfg = load_config(config)
-    ctx.obj = cfg
+    ctx.obj = None
+    try:
+        ctx.obj = load_config(config)
+    except Exception as e:
+        # Б9: битый конфиг раньше давал traceback на ЛЮБОЙ команде, включая
+        # `validate` — то есть проверить конфиг было нельзя.
+        # многострочный дамп pydantic в консоли нечитаем — оставляем первую строку
+        detail = str(e).strip().splitlines() or ["не известна"]
+        ctx.meta["config_error"] = f"{type(e).__name__}: {detail[0]}"
+        if (ctx.invoked_subcommand or "") not in ("validate", "schema"):
+            click.echo(f"Ошибка конфигурации {config}: {ctx.meta['config_error']}",
+                       err=True)
+            raise SystemExit(2)
+
+
+def _need_config(ctx: click.Context):
+    cfg = getattr(ctx, "obj", None)
+    if cfg is None:
+        raise SystemExit(f"Ошибка конфигурации: "
+                         f"{ctx.meta.get('config_error', 'не загружена')}")
+    return cfg
 
 
 @cli.command()
@@ -210,6 +230,135 @@ def export_cmd(cfg, fmt, out_dir):
     if fmt in ("parquet", "both"):
         result["parquet"] = export_parquet(final, base / "corpus.parquet")
     click.echo(json_dump(result))
+
+
+_EMAIL_IN_UA = re.compile(r"mailto:\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+
+
+def _canon(url: str) -> str:
+    """Канон URL для проверки дублей — так же, как его канонит краул."""
+    from .text_utils import canonical_url
+    try:
+        return canonical_url(url)
+    except Exception:
+        return url.strip().lower()
+
+
+def config_warnings(cfg) -> list[str]:
+    """Мягкие замечания: конфиг валиден, но краулинг пройдёт не так, как ждём."""
+    out: list[str] = []
+    if not cfg.sources:
+        out.append("⚠ список sources пуст — крауливать нечего")
+    ua = (cfg.output.user_agent or "")
+    if not (_EMAIL_IN_UA.search(ua) or (cfg.output.contact_email or "").strip()):
+        polite = {"arxiv", "crossref", "doaj", "wikipedia", "stackexchange"}
+        hit = sorted({s.type for s in cfg.sources} & polite)
+        if hit:
+            out.append(
+                "⚠ нет контактного e-mail (output.contact_email или mailto: в "
+                f"user_agent): типы {hit} требуют «polite»-идентификацию, иначе "
+                "уходят 403 Too Many Requests")
+    seen: dict[str, list[int]] = {}
+    for i, s in enumerate(cfg.sources, 1):
+        if not (s.url or "").strip():
+            out.append(f"✗ sources[{i}]: пустой url")
+            continue
+        seen.setdefault(_canon(s.url), []).append(i)
+    for canon, idxs in seen.items():
+        if len(idxs) > 1:
+            out.append(f"⚠ источники {idxs} — один URL после нормализации "
+                       f"({canon[:70]}): второй будет пропущен как уже сделанный")
+    if cfg.output.request_delay < 0.05:
+        out.append(f"⚠ output.request_delay={cfg.output.request_delay}: "
+                   "это спам-режим, сайты банят по IP")
+    if cfg.quality.min_chars <= 0:
+        out.append("⚠ quality.min_chars<=0: фильтр по длине выключен, в корпус "
+                   "попадут заглушки и страницы-ошибки")
+    if not cfg.output.respect_robots_txt:
+        out.append("⚠ output.respect_robots_txt=false: игнорируем robots.txt — "
+                   "так не надо делать без явной причины")
+    if cfg.pipeline.per_url_timeout_minutes <= 0:
+        out.append("⚠ pipeline.per_url_timeout_minutes<=0: зависший источник "
+                   "остановит весь прогон")
+    return out
+
+
+def validate_config_file(path: str | Path) -> list[str]:
+    """Проверить YAML-конфиг, ничего не запуская.
+
+    Возвращает список проблем (пусто = всё хорошо). Исключений не бросает —
+    функцию вызывают из GUI (Ctrl+Shift+V).
+    """
+    import yaml
+    from pydantic import ValidationError
+    from .models import AppConfig
+
+    p = Path(path)
+    if not p.exists():
+        return [f"✗ файл не найден: {p}"]
+    try:
+        raw_text = p.read_text(encoding="utf-8")
+    except OSError as e:
+        return [f"✗ файл не читается: {e}"]
+    try:
+        raw = yaml.safe_load(raw_text)
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f" (строка {mark.line + 1}, колонка {mark.column + 1})" if mark else ""
+        return [f"✗ синтаксис YAML{where}: {getattr(e, 'problem', None) or e}"]
+    if raw is None:
+        return [f"✗ файл пустой: {p}"]
+    if not isinstance(raw, dict):
+        return ["✗ корень YAML должен быть словарём вида sources: / output: / ..."]
+    try:
+        cfg = AppConfig(**raw)
+    except ValidationError as e:
+        problems = []
+        for err in e.errors():
+            loc = ".".join(str(x) for x in err["loc"]) or "<корень>"
+            problems.append(f"✗ {loc}: {err['msg']}")
+        return problems or ["✗ конфиг не прошёл валидацию"]
+    except Exception as e:
+        return [f"✗ конфиг не разобран: {type(e).__name__}: {e}"]
+    return config_warnings(cfg)
+
+
+@cli.command(name="validate")
+@click.option("--config", "-c", "config_path", default=None,
+              help="Проверить указанный файл вместо -c (можно битый конфиг)")
+@click.option("--strict", is_flag=True, help="Считать замечания (⚠) ошибкой")
+@click.pass_context
+def validate_cmd(ctx, config_path, strict):
+    """Проверить корректность YAML-конфига без запуска краулинга."""
+    path = (config_path or (ctx.parent.params.get("config") if ctx.parent else None)
+            or "config.yaml")
+    problems = validate_config_file(path)
+    errors = [x for x in problems if x.startswith("✗")]
+    warns = [x for x in problems if x.startswith("⚠")]
+    for line in problems:
+        click.echo(line)
+    if errors or (strict and warns):
+        click.echo(f"Невалидно: {path} "
+                   f"(ошибок {len(errors)}, замечаний {len(warns)})")
+        raise SystemExit(1)
+    if warns:
+        click.echo(f"Валидно, но есть замечания ({len(warns)}): {path}")
+    else:
+        click.echo(f"Валидно: {path}")
+
+
+@cli.command(name="schema")
+@click.option("--out", "out_path", default=None, help="Записать JSON-схему в файл")
+def schema_cmd(out_path):
+    """JSON-схема конфига (для проверки редакторами / внешними валидаторами)."""
+    import json
+    from .models import AppConfig
+    schema = json.dumps(AppConfig.model_json_schema(), ensure_ascii=False, indent=2)
+    if out_path:
+        Path(out_path).write_text(schema, encoding="utf-8")
+        click.echo(f"Схема записана: {out_path}")
+    else:
+        click.echo(schema)
 
 
 def json_dump(obj) -> str:

@@ -130,3 +130,52 @@ def test_import_export_settings(tmp_path):
     assert s.quality.spam_check is False
     # Неизвестные секции игнорируются
     assert not hasattr(s, "unknown_section")
+
+
+# ------------------------------------------------------------------ секреты (Б)
+
+def test_export_dict_hides_secrets_by_default():
+    from corpus_builder.app_settings import (REDACTED_SECRET, AppSettings,
+                                             secret_paths, to_export_dict)
+    s = AppSettings()
+    s.github.token = "ghp_topsecret"
+    s.stackexchange.api_key = "se_topsecret"
+    s.crawl.request_delay = 1.5
+    assert set(secret_paths(s)) == {"github.token", "stackexchange.api_key"}
+    d = to_export_dict(s)
+    assert d["github"]["token"] == REDACTED_SECRET
+    assert d["stackexchange"]["api_key"] == REDACTED_SECRET
+    assert d["crawl"]["request_delay"] == 1.5, "не секреты не трогаем"
+    assert to_export_dict(s, redact=False)["github"]["token"] == "ghp_topsecret"
+
+
+def test_export_dict_leaves_empty_secrets_alone():
+    from corpus_builder.app_settings import AppSettings, to_export_dict
+    d = to_export_dict(AppSettings())
+    assert d["github"]["token"] == "", "пустое поле не превращаем в заглушку"
+    assert d["stackexchange"]["api_key"] == ""
+
+
+def test_reimporting_redacted_export_keeps_real_token():
+    """Круг «экспорт → импорт» не должен стирать токен заглушкой."""
+    from corpus_builder.app_settings import REDACTED_SECRET, AppSettings
+    original = AppSettings()
+    original.github.token = "ghp_keepme"
+    exported = json.loads(json.dumps(original.to_export_dict()))
+    exported["github"]["token"] = REDACTED_SECRET
+
+    restored = AppSettings._from_dict(exported)
+    assert restored.github.token == "", "заглушка не должна становиться токеном"
+
+    loaded = AppSettings._from_dict({"github": {"token": "ghp_keepme"}})
+    again = AppSettings._from_dict(exported)
+    assert again.github.token == ""
+    assert loaded.github.token == "ghp_keepme"
+
+
+def test_secret_field_detection_is_narrow():
+    from corpus_builder.app_settings import is_secret_field
+    assert is_secret_field("token") and is_secret_field("api_key")
+    assert is_secret_field("client_secret") and is_secret_field("github_access_token")
+    assert not is_secret_field("url") and not is_secret_field("max_workers")
+    assert not is_secret_field("token_env"), "имя переменной окружения — не секрет"
