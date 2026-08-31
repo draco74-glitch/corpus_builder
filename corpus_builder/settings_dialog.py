@@ -233,7 +233,12 @@ class SettingsDialog(QDialog):
         self.spin_delay = QDoubleSpinBox()
         self.spin_delay.setRange(0.0, 30.0)
         self.spin_delay.setSuffix(" сек")
-        layout.addRow("Задержка между запросами:", self.spin_delay)
+        self.spin_delay.setToolTip(
+            "Минимальный интервал МЕЖДУ ЗАПРОСАМИ К ОДНОМУ ДОМЕНУ (не между "
+            "записями: разные домены не мешают друг другу). Crawl-delay и "
+            "Request-rate из robots.txt этого домена имеют приоритет выше. "
+            "Ответ из HTTP-кэша задержку не ждёт.")
+        layout.addRow("Задержка между запросами (на домен):", self.spin_delay)
 
         self.spin_max_file_size = QSpinBox()
         self.spin_max_file_size.setRange(1, 1000)
