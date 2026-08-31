@@ -145,3 +145,67 @@ def test_minhash_detects_near_duplicates(tmp_path):
     dups = dedup_minhash(records, num_perm=cfg.minhash_num_perm, threshold=cfg.minhash_threshold)
     assert dups.get(1) == 0
     assert 2 not in dups
+
+
+def test_incremental_rerun_finds_the_same_duplicates(tmp_path):
+    """Повторный инкрементальный прогон обязан совпасть с холодным.
+
+    Был баг: запись с уже известным индексом URL пропускалась, и второй проход
+    по тому же файлу выдавал removed=0 — на выход уезжал недодедуплированный
+    корпус без единого предупреждения.
+    """
+    import json
+
+    from corpus_builder.models import DedupConfig
+    from corpus_builder.postproc.dedup import run_dedup, run_dedup_adaptive
+
+    src = tmp_path / "raw.jsonl"
+    with open(src, "w", encoding="utf-8") as f:
+        for i in range(60):
+            f.write(json.dumps({"source_url": f"http://s/{i}", "source_type": "html",
+                                "status": "ok",
+                                "content": "слово " * 80 + f" v{i % 20}"}) + "\n")
+
+    inc_cfg = DedupConfig(exact=False, minhash=True, dedup_images=False,
+                          incremental=True,
+                          incremental_index_file=str(tmp_path / "idx.pkl"))
+    cold = run_dedup_adaptive(src, tmp_path / "warm1.jsonl", inc_cfg)
+    warm = run_dedup_adaptive(src, tmp_path / "warm2.jsonl", inc_cfg)
+    plain = run_dedup(src, tmp_path / "plain.jsonl",
+                      DedupConfig(exact=False, minhash=True, dedup_images=False))
+
+    def dup_urls(name):
+        return sorted(json.loads(l)["source_url"]
+                      for l in open(tmp_path / (name + ".jsonl"), encoding="utf-8")
+                      if json.loads(l).get("is_duplicate"))
+
+    assert cold["removed"] == plain["removed"] == 40, (cold, plain)
+    assert warm["removed"] == cold["removed"], "второй прогон потерял дубли"
+    assert dup_urls("warm1") == dup_urls("warm2") == dup_urls("plain")
+    assert warm["index_size"] == cold["index_size"] == 20
+
+
+def test_incremental_index_survives_new_records(tmp_path):
+    """Догружаем корпус — новые дубли находятся относительно старых оригиналов."""
+    import json
+
+    from corpus_builder.models import DedupConfig
+    from corpus_builder.postproc.dedup import run_dedup_adaptive
+
+    def write(path, ids):
+        with open(path, "w", encoding="utf-8") as f:
+            for i in ids:
+                f.write(json.dumps({"source_url": f"http://s/{i}", "source_type": "html",
+                                    "status": "ok",
+                                    "content": "текст " * 90 + f" n{i % 10}"}) + "\n")
+
+    src = tmp_path / "raw.jsonl"
+    cfg = DedupConfig(exact=False, minhash=True, dedup_images=False, incremental=True,
+                      incremental_index_file=str(tmp_path / "idx.pkl"))
+    write(src, range(40))
+    first = run_dedup_adaptive(src, tmp_path / "o1.jsonl", cfg)
+    write(src, range(50))                       # +10 записей, все — дубли существующих
+    second = run_dedup_adaptive(src, tmp_path / "o2.jsonl", cfg)
+    assert first["removed"] == 30, first
+    assert second["removed"] == 40, second      # 30 старых + 10 новых
+    assert second["index_size"] == 10
